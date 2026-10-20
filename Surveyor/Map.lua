@@ -308,12 +308,17 @@ local function drawLoops(m, loops, color, w, h, thickness, shadowThickness)
 	return true
 end
 
+-- True when hideExplored is on and the area is explored: draw() paints nothing for it.
+local function hidden(m, s, id, px, py)
+	return s.hideExplored and isExplored(m, id, px, py) or false
+end
+
 -- True when a shadow under every edge draw() paints keeps the total within MAX_LINES.
 local function shadowFits(m, s)
 	local n = 0
 	for i = 1, #m.ids do
 		local id = m.ids[i]
-		if Grid.Passes(s.mode, ns.Areas and ns.Areas[id]) then
+		if Grid.Passes(s.mode, ns.Areas and ns.Areas[id]) and not hidden(m, s, id, probe(m, id, m.source[id])) then
 			local loops = m.source[id][8]
 			for li = 1, #loops do
 				for _, ax, ay, bx, by in Grid.Edges(loops[li]) do
@@ -339,12 +344,15 @@ local function draw(m, s, w, h, thickness, shadowThickness)
 		local row = ns.Areas and ns.Areas[id]
 		if Grid.Passes(s.mode, row) then
 			local px, py = probe(m, id, e)
-			local color = isExplored(m, id, px, py) and EXPLORED or UNEXPLORED
-			if not drawLoops(m, e[8], color, w, h, thickness, shadowThickness) then
-				return
-			end
-			if s.names and inside(px, py) then
-				addLabel(nameOf(id, row), px * w, py * h, color)
+			local explored = isExplored(m, id, px, py)
+			if not (explored and s.hideExplored) then
+				local color = explored and EXPLORED or UNEXPLORED
+				if not drawLoops(m, e[8], color, w, h, thickness, shadowThickness) then
+					return
+				end
+				if s.names and inside(px, py) then
+					addLabel(nameOf(id, row), px * w, py * h, color)
+				end
 			end
 		end
 	end
@@ -562,6 +570,11 @@ function Map.Probe()
 				add("data area %d in the explored set: %s", hits[i], set[hits[i]] and "yes" or "no")
 			end
 		end
+		-- The position API answers only inside an overlay's hit rectangle (in game,
+		-- 2026-10-20) and is not consulted on a map with baked overlays; its lines
+		-- would only mislead here.
+		add("position API not used on this map; the overlays decide")
+		return out
 	end
 	local api = C_MapExplorationInfo and C_MapExplorationInfo.GetExploredAreaIDsAtPosition
 	if not api then

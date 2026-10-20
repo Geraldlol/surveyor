@@ -341,10 +341,10 @@ class SeaTests(unittest.TestCase):
         liquid = {(1, 1): [(1, 10.0, 0, 0, 8, 8)], (2, 1): [(5, 10.0, 0, 0, 8, 8)]}
         self.assertEqual(self.sea_flags(liquid, {(1, 1): (-50.0, 0.0), (2, 1): (-50.0, 0.0)}), set())
 
-    def test_area_left_empty_by_sea_leaves_borders_and_zones_but_stays_in_areas(self):
-        import json
-
-        mcsv, acsv, files = synthetic_inputs()
+    def sea_column(self, level):
+        """Tile 11_20 with column 0 (16 chunks) open sea and owned by CopyTown at the given ExplorationLevel."""
+        mcsv, _, files = synthetic_inputs()
+        acsv = area_csv([r[:5] + (level,) if r[0] == 500 else r for r in AREAS]).encode()
         files[2001] = adt(
             11,
             20,
@@ -352,13 +352,50 @@ class SeaTests(unittest.TestCase):
             liquid={(0, iy): [(1250, 0.0, 0, 0, 8, 8)] for iy in range(16)},
             ground={(0, iy): (-40.0, 10.0) for iy in range(16)},
         )
-        out = build.generate("1.60.1.70450", "wow_classic_beta", mcsv, acsv, LIQUID_CSV.encode(), files.__getitem__, *OVERLAY_INPUTS)
+        return build.generate("1.60.1.70450", "wow_classic_beta", mcsv, acsv, LIQUID_CSV.encode(), files.__getitem__, *OVERLAY_INPUTS)
+
+    def test_area_left_empty_by_sea_leaves_borders_and_zones_but_stays_in_areas(self):
+        import json
+
+        out = self.sea_column(0)
         b1 = out["Borders1.lua"].decode()
         self.assertNotIn("[500]", b1)
         self.assertIn("ns.Borders[1][14] = ", b1)
-        self.assertIn('\t[500] = { "CopyTown", 0, 3, 201, 1 },\n', out["Areas.lua"].decode())
+        self.assertIn('\t[500] = { "CopyTown", 0, 0, 201, 1 },\n', out["Areas.lua"].decode())
         sea = json.loads(out["MANIFEST.json"])["maps"]["1"]["openSea"]
-        self.assertEqual(sea, {"chunksDropped": 16, "areasDropped": [{"id": 500, "name": "CopyTown"}]})
+        self.assertEqual(
+            sea, {"chunksDropped": 16, "areasDropped": [{"id": 500, "name": "CopyTown"}], "keptByLevel": 0}
+        )
+
+    def test_negative_exploration_level_drops_open_sea_like_zero(self):
+        import json
+
+        out = self.sea_column(-1)
+        self.assertNotIn("[500]", out["Borders1.lua"].decode())
+        sea = json.loads(out["MANIFEST.json"])["maps"]["1"]["openSea"]
+        self.assertEqual(
+            sea, {"chunksDropped": 16, "areasDropped": [{"id": 500, "name": "CopyTown"}], "keptByLevel": 0}
+        )
+
+    def test_open_sea_of_an_area_that_pays_xp_is_kept(self):
+        import json
+
+        out = self.sea_column(3)
+        b1 = out["Borders1.lua"].decode()
+        self.assertIn("ns.Borders[1][500] = { 176, 320, 177, 336, 176, 327, 16, ", b1)
+        self.assertIn("ns.Zones[1][500] = ", b1)
+        sea = json.loads(out["MANIFEST.json"])["maps"]["1"]["openSea"]
+        self.assertEqual(sea, {"chunksDropped": 0, "areasDropped": [], "keptByLevel": 16})
+
+    def test_sea_rule_reads_the_exploration_level(self):
+        areas = build.read_areas(area_csv(AREAS))
+        chunks = [(0, 0, 12, True), (1, 0, 87, True), (2, 0, 87, False), (3, 0, 9, True)]  # levels 0, 5, 5, 0
+        m = build.build_map(0, 100, [(0, 0, chunks)], areas)
+        self.assertEqual(sorted(m.borders), [87])
+        self.assertEqual(m.borders[87].chunks, 2)
+        self.assertEqual((m.sea_chunks, m.sea_kept, m.sea_areas), (2, 1, [9, 12]))
+        self.assertEqual(sorted(m.zones), [12])
+        self.assertEqual(m.zones[12].chunks, 2)
 
 
 class OverlayTests(unittest.TestCase):

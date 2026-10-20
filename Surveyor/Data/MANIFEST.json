@@ -12,20 +12,17 @@
   },
   "maps": {
     "0": {
-      "areas": 446,
+      "areas": 447,
       "chunks": 188416,
       "openSea": {
         "areasDropped": [
-          {
-            "id": 104,
-            "name": "The Vile Reef"
-          },
           {
             "id": 2397,
             "name": "The Great Sea"
           }
         ],
-        "chunksDropped": 79769
+        "chunksDropped": 76914,
+        "keptByLevel": 2855
       },
       "otherContinent": {
         "chunks": 0,
@@ -38,8 +35,8 @@
       },
       "tiles": 736,
       "vertices": {
-        "borders": 17758,
-        "zones": 5064
+        "borders": 17710,
+        "zones": 4872
       },
       "wdtFileDataID": 775971,
       "zones": 28
@@ -58,7 +55,8 @@
             "name": "The Great Sea"
           }
         ],
-        "chunksDropped": 109222
+        "chunksDropped": 96861,
+        "keptByLevel": 12361
       },
       "otherContinent": {
         "chunks": 0,
@@ -71,8 +69,8 @@
       },
       "tiles": 988,
       "vertices": {
-        "borders": 21284,
-        "zones": 6190
+        "borders": 20902,
+        "zones": 5460
       },
       "wdtFileDataID": 782779,
       "zones": 26

@@ -71,8 +71,13 @@ height 8) whose `minHeight` is above the chunk's highest terrain vertex (zBase a
 MCNK 0x70 plus the largest of the 145 `MCVT` heights). Ocean liquid types come
 from `wago/<build>/LiquidType.csv` (`SoundBank == 1` or `Flags & 0x400`). The file
 is required. Height alone is not used, because dry land such as Bloodhoof Village
-and Un'Goro lies below z 0. An area whose every chunk is open sea is left out of
-`ns.Borders` and `ns.Zones` but stays in `ns.Areas`.
+and Un'Goro lies below z 0. An open-sea chunk is dropped only when its area's
+`ExplorationLevel` is 0 or below (rows at -1 exist and pay no XP): the sea rows (The Great Sea, The Veiled Sea; subzones
+of the zone they border) and the zone rows themselves. An area that pays
+exploration XP (`ExplorationLevel` > 0, such as Bay of Storms or The Vile Reef)
+keeps every chunk, because a swimming player discovers it there. An area whose
+every chunk is dropped is left out of `ns.Borders` and `ns.Zones` but stays in
+`ns.Areas`; the zone outline is built from the chunks that survive.
 
 ## Output format
 
@@ -98,7 +103,8 @@ All files are deterministic: sorted ids, LF, tabs, no timestamps or paths.
   the WDT FileDataID, tile and chunk counts, skipped chunks (area 0 or not in
   AreaTable, with the distinct ids), chunks whose area row names another
   continent, chunks dropped as open sea and the areas left with none (ids and
-  names), area and zone counts, and vertex totals.
+  names), open-sea chunks kept because their area pays XP (`keptByLevel`), area
+  and zone counts, and vertex totals.
 
 - `Surveyor/Data/Overlays.lua`: one statement per uiMapID,
   `ns.Overlays[uiMapID] = { { w, h, x, y, { areaId, ... } }, ... }`, where
@@ -126,3 +132,6 @@ Generated Lua carries `-- luacheck: no max line length`; a loop is one line.
   whose terrain peaks above the surface (reefs, rocks), is kept, so coasts stay
   ragged by up to one chunk. Inland water (lakes, rivers, slime, magma) is never
   dropped.
+- The level gate is per area row. A level-0 subzone that is not a sea row, such
+  as Hetaera's Clutch, still loses its submerged chunks; its outline is
+  fragmented or missing, which only shows in `all` mode.

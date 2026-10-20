@@ -17,6 +17,7 @@
   neighbouring zones at its edges.
 - Options page under Esc > Options > AddOns (`/survey config`): enabled, mode, area names, line
   thickness (1 to 6 px), line opacity (10 to 100%) and the minimap button.
+- Hide explored areas (options checkbox or `/survey explored`): explored areas draw no border, shadow or name.
 - `/survey probe` prints what the client and the data report at the player's position.
 - `/survey on | off | names | xp | all | config | probe | status`; `xp` (default) draws only the areas that pay
   discovery XP.

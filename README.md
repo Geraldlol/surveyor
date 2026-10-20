@@ -8,7 +8,7 @@ Every area that gives discovery XP has a hard edge, and that edge comes straight
 
 - On a zone map, every area that awards exploration XP is outlined along its real border. Areas you haven't found yet are gold. Areas you've already discovered are green and faded.
 - Area names sit inside each outline. Continent maps are left alone; Blizzard already names the zones there.
-- By default only areas that actually pay XP are shown. `/survey all` shows every area with a discovery flag, including the ones that only clear fog.
+- Explored areas are drawn in green, or hidden with the "Hide explored areas" option. By default only areas that actually pay XP are shown. `/survey all` shows every area with a discovery flag, including the ones that only clear fog.
 
 ## Commands
 
@@ -16,6 +16,7 @@ Every area that gives discovery XP has a hard edge, and that edge comes straight
 /survey            show status
 /survey on | off   toggle the layer
 /survey names      toggle the labels
+/survey explored   hide or show areas you have already explored
 /survey xp         only areas that pay XP (default)
 /survey all        every area with a discovery flag
 /survey config     open the options page

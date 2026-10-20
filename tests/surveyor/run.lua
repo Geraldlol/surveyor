@@ -691,6 +691,63 @@ test("map: a zone map hides a neighbouring zone's subzone and draws its own", fu
     Map.Paint()
 end)
 
+test("map: hideExplored leaves out explored areas' lines, shadows and names", function()
+    sns.Settings.mode = "all"
+    mock.textures = { tex(OV[2]) } -- Quiet Hollow explored, Test Vale not
+    layer.scripts.OnEvent(layer, "MAP_EXPLORATION_UPDATED")
+    Map.Invalidate()
+    Map.Paint()
+    equal(#shown(layer.lines), 16, "both areas before hiding")
+    equal(#shown(layer.strings), 2, "both names before hiding")
+    sns.Settings.hideExplored = true
+    Map.Invalidate()
+    layer.scripts.OnUpdate(layer, 0.2)
+    local ls = shown(layer.lines)
+    equal(#ls, 8, "only Test Vale's edges and their shadows")
+    for i = 2, #ls, 2 do
+        sameColor(ls[i - 1], BLACK, 0.5, "shadow under the unexplored edge")
+        sameColor(ls[i], GOLD, 0.9, "unexplored edge")
+    end
+    local fs = shown(layer.strings)
+    equal(#fs, 1, "one name")
+    equal(fs[1].text, "Test Vale", "the unexplored area's name")
+    sns.Settings.hideExplored = false
+    Map.Invalidate()
+    layer.scripts.OnUpdate(layer, 0.2)
+    ls = shown(layer.lines)
+    equal(#ls, 16, "turning it off restores the explored area")
+    sameColor(ls[10], GREEN, 0.55, "Quiet Hollow green again")
+    equal(#shown(layer.strings), 2, "names restored")
+    sns.Settings.mode = "xp"
+    mock.textures = {}
+    layer.scripts.OnEvent(layer, "MAP_EXPLORATION_UPDATED")
+    Map.Paint()
+end)
+
+test("map: the shadow budget ignores hidden explored areas", function()
+    local noticed = #notices
+    busyFields(1999) -- 3998 + 4 edges: shadows for both would make 8004
+    mock.mapID = 400 -- no baked overlays: the position probe decides
+    mock.explored = { 903 }
+    Map.Paint()
+    equal(#shown(layer.lines), 4002, "explored Busy Fields shown: edges only")
+    equal(blackLines(layer.lines), 0, "no shadows")
+    sns.Settings.hideExplored = true
+    Map.Invalidate()
+    Map.Paint()
+    local ls = shown(layer.lines)
+    equal(#ls, 8, "Busy Fields hidden: Test Vale's edges and their shadows")
+    equal(blackLines(layer.lines), 4, "shadows fit once the hidden edges are not counted")
+    sameColor(ls[2], GOLD, 0.9, "Test Vale unexplored")
+    equal(#notices, noticed, "no new cap notice")
+    sns.Settings.hideExplored = false
+    sns.Borders[0][903] = nil
+    mock.explored = {}
+    mock.mapID = 100
+    Map.Invalidate()
+    Map.Paint()
+end)
+
 test("map: probe reports the player's map, data area and explored ids", function()
     mock.explored = { 900, 4242 }
     mock.textures = { tex(OV[1]), tex(OV[3]), { textureWidth = 1, textureHeight = 1, offsetX = 0, offsetY = 0 } }
@@ -699,7 +756,7 @@ test("map: probe reports the player's map, data area and explored ids", function
     _G.GetSubZoneText = function() return "Test Vale" end
     _G.GetZoneText = function() return "Test Zone" end
     local out = Map.Probe()
-    equal(#out, 12, "line count")
+    equal(#out, 10, "line count")
     equal(out[1], "map 100 type 3", "map line")
     equal(out[2], "player 0.3125, 0.5625", "position line")
     assert(out[3]:find("world continent 0: x ", 1, true) == 1 and out[3]:find("(grid 10.50, 20.50)", 1, true), out[3])
@@ -714,23 +771,23 @@ test("map: probe reports the player's map, data area and explored ids", function
     parts[#parts + 1] = "..."
     equal(out[8], "explored areas by overlay: " .. table.concat(parts, ", "), "matched ids, 20 then ...")
     equal(out[9], "data area 900 in the explored set: yes", "player's area in the set")
-    equal(out[10], "explored ids at player: 2", "explored count")
-    equal(out[11], "  900 (Test Vale): in Borders yes, layer verdict explored", "known id")
-    equal(out[12], "  4242 (4242): in Borders no, layer verdict n/a", "unknown id")
+    equal(out[10], "position API not used on this map; the overlays decide", "position API skipped on an overlay map")
     mock.textures = { tex(OV[2]) }
     out = Map.Probe()
     equal(out[8], "explored areas by overlay: 901 Quiet Hollow", "one matched id")
     equal(out[9], "data area 900 in the explored set: no", "player's area not in the set")
-    equal(out[11], "  900 (Test Vale): in Borders yes, layer verdict unexplored", "verdict follows the set")
+    equal(#out, 10, "still no position lines")
     _G.C_Map.GetBestMapForUnit = function() return 700 end
     out = Map.Probe()
     equal(out[6], "baked overlays for map 700: none", "no baked overlays")
-    equal(out[7], "explored ids at player: 2", "position probe follows")
+    equal(out[7], "explored ids at player: 2", "position probe follows on a map without overlays")
+    equal(out[8], "  900 (Test Vale): in Borders yes, layer verdict explored", "known id on the fallback map")
+    equal(out[9], "  4242 (4242): in Borders no, layer verdict n/a", "unknown id on the fallback map")
     _G.C_Map.GetBestMapForUnit = function() return 100 end
     _G.C_MapExplorationInfo = nil
     out = Map.Probe()
     equal(out[7], "C_MapExplorationInfo.GetExploredMapTextures missing", "missing textures API")
-    equal(out[#out], "C_MapExplorationInfo.GetExploredAreaIDsAtPosition missing", "missing exploration API")
+    equal(out[#out], "position API not used on this map; the overlays decide", "overlay map never reaches the position API")
     _G.C_Map.GetBestMapForUnit = nil
     out = Map.Probe()
     equal(#out, 1, "missing best map stops early")
@@ -868,7 +925,7 @@ local function loadCore(globalSettings)
     return cns, addon
 end
 
-test("options: six controls in order with their kinds, ranges and choices", function()
+test("options: seven controls in order with their kinds, ranges and choices", function()
     local cns = loadCore(nil)
     local api = settingsApi()
     equal(cns.Options.Register(api), 77, "the page returns the category the panel opens to")
@@ -878,6 +935,7 @@ test("options: six controls in order with their kinds, ranges and choices", func
         { "SURVEYOR_ENABLED", "checkbox", "boolean", true },
         { "SURVEYOR_MODE", "dropdown", "string", "xp" },
         { "SURVEYOR_NAMES", "checkbox", "boolean", true },
+        { "SURVEYOR_HIDEEXPLORED", "checkbox", "boolean", false },
         { "SURVEYOR_THICKNESS", "slider", "number", 2 },
         { "SURVEYOR_OPACITY", "slider", "number", 100 },
         { "SURVEYOR_MINIMAP", "checkbox", "boolean", true },
@@ -892,7 +950,8 @@ test("options: six controls in order with their kinds, ranges and choices", func
         equal(c.setting.default, w[4], w[1] .. " default")
         assert(type(c.tooltip) == "string" and c.tooltip ~= "", w[1] .. " tooltip")
     end
-    local thickness, opacity = api.controls[4].options, api.controls[5].options
+    equal(api.controls[4].setting.label, "Hide explored areas", "hide explored label")
+    local thickness, opacity = api.controls[5].options, api.controls[6].options
     equal(table.concat({ thickness.min, thickness.max, thickness.step }, ","), "1,6,1", "thickness range")
     equal(table.concat({ opacity.min, opacity.max, opacity.step }, ","), "10,100,5", "opacity range")
     local choices = api.controls[2].options()
@@ -924,6 +983,25 @@ test("options: proxies read the profile and write through SetSetting", function(
     equal(cns.Settings.minimap.angle, 135, "the angle is kept")
     equal(minimap.get(), false, "getter follows hide")
     equal(cns.revs, 3, "every write bumps the revision")
+end)
+
+test("options: /survey explored and the checkbox toggle hideExplored through SetSetting", function()
+    local cns, addon = loadCore(nil)
+    local api = settingsApi()
+    cns.Options.Register(api)
+    equal(cns.Settings.hideExplored, false, "off by default")
+    addon:HandleSlash("explored")
+    equal(cns.Settings.hideExplored, true, "slash turns it on")
+    equal(cns.revs, 1, "slash bumps the revision")
+    assert(cns.printed[#cns.printed]:find("hide explored on", 1, true), cns.printed[#cns.printed])
+    equal(api.proxies.SURVEYOR_HIDEEXPLORED.get(), true, "the checkbox reads the profile")
+    api.proxies.SURVEYOR_HIDEEXPLORED.set(false)
+    equal(cns.Settings.hideExplored, false, "the checkbox writes the profile")
+    equal(cns.revs, 2, "the checkbox bumps the revision")
+    addon:HandleSlash("Explored")
+    equal(cns.Settings.hideExplored, true, "the verb is case-insensitive")
+    addon:HandleSlash("bogus")
+    assert(cns.printed[#cns.printed]:find("| explored |", 1, true), "usage names the verb")
 end)
 
 test("options: no Settings API registers nothing and /survey config prints a note", function()

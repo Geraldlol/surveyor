@@ -416,6 +416,7 @@ class MapData:
     other_continent: int
     other_continent_ids: list
     sea_chunks: int  # tagged chunks dropped as open sea
+    sea_kept: int  # open-sea chunks kept because their area has ExplorationLevel > 0 (pays XP)
     sea_areas: list  # areas whose every chunk is open sea (absent from borders/zones)
     owners: set  # every area owning a tagged chunk, sea or not
     borders: dict  # areaId -> Outline
@@ -423,10 +424,15 @@ class MapData:
 
 
 def build_map(map_id: int, wdt: int, tiles: list, areas: dict[int, Area]) -> MapData:
-    """tiles: list of (col, row, [(gx, gy, areaId, openSea), ...]). Open-sea chunks are not traced."""
+    """tiles: list of (col, row, [(gx, gy, areaId, openSea), ...]).
+
+    An open-sea chunk is not traced when its area's ExplorationLevel is 0 or below (sea rows,
+    zone rows; the addon's xp mode needs > 0); an area that pays exploration XP keeps every
+    chunk, since a swimming player discovers it.
+    """
     by_area: dict[int, set] = {}
     owners = set()
-    zero = missing = other = sea = 0
+    zero = missing = other = sea = sea_kept = 0
     missing_ids, other_ids = set(), set()
     chunk_count = 0
     for _col, _row, chunks in tiles:
@@ -444,8 +450,10 @@ def build_map(map_id: int, wdt: int, tiles: list, areas: dict[int, Area]) -> Map
                 other_ids.add(aid)
             owners.add(aid)
             if open_sea:
-                sea += 1
-                continue
+                if areas[aid].level <= 0:
+                    sea += 1
+                    continue
+                sea_kept += 1
             by_area.setdefault(aid, set()).add((gx, gy))
     by_zone: dict[int, set] = {}
     for aid, cells in by_area.items():
@@ -461,6 +469,7 @@ def build_map(map_id: int, wdt: int, tiles: list, areas: dict[int, Area]) -> Map
         other_continent=other,
         other_continent_ids=sorted(other_ids),
         sea_chunks=sea,
+        sea_kept=sea_kept,
         sea_areas=sorted(owners - set(by_area)),
         owners=owners,
         borders={aid: outline(c) for aid, c in sorted(by_area.items())},
@@ -583,6 +592,7 @@ def emit_manifest(
                 "openSea": {
                     "chunksDropped": m.sea_chunks,
                     "areasDropped": [{"id": a, "name": areas[a].name} for a in m.sea_areas],
+                    "keptByLevel": m.sea_kept,
                 },
                 "areas": len(m.borders),
                 "zones": len(m.zones),

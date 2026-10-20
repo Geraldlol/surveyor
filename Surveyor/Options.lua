@@ -11,6 +11,7 @@ local PAGE = {
 	{ key = "mode", label = "Mode", kind = "choice", tooltip = "Which areas get a border.",
 	  choices = { { "xp", "Areas that give XP" }, { "all", "Every area with a map bit" } } },
 	{ key = "names", label = "Show area names", tooltip = "Write each area's name inside its border." },
+	{ key = "hideExplored", label = "Hide explored areas", tooltip = "Draw no border or name for areas you have already explored." },
 	{ key = "thickness", label = "Line thickness", kind = "slider", min = 1, max = 6, step = 1,
 	  tooltip = "The width of the border lines in pixels." },
 	{ key = "opacity", label = "Line opacity", kind = "slider", min = 10, max = 100, step = 5,

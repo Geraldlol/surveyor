@@ -6,6 +6,7 @@ local defaults = {
 		enabled = true,
 		mode = "xp", -- "xp": areas with ExplorationLevel > 0; "all": every area with a bit
 		names = true,
+		hideExplored = false,
 		thickness = 2,
 		opacity = 100,
 		minimap = { hide = false, angle = 220 },
@@ -31,7 +32,7 @@ function ns.OpenOptions()
 	if optionsCategory and Settings and Settings.OpenToCategory then
 		Settings.OpenToCategory(optionsCategory)
 	else
-		ns.Print("the options panel needs the client's Settings API; use /survey on | off | names | xp | all")
+		ns.Print("the options panel needs the client's Settings API; use /survey on | off | names | explored | xp | all")
 	end
 end
 
@@ -54,8 +55,8 @@ end
 
 function Surveyor:PrintStatus()
 	local s = self.db.profile
-	self:Printf("borders %s, mode %s, names %s, map layer %s",
-		s.enabled and "on" or "off", s.mode, s.names and "on" or "off",
+	self:Printf("borders %s, mode %s, names %s, hide explored %s, map layer %s",
+		s.enabled and "on" or "off", s.mode, s.names and "on" or "off", s.hideExplored and "on" or "off",
 		self.mapReady and "ready" or "unavailable")
 end
 
@@ -71,6 +72,8 @@ function Surveyor:HandleSlash(input)
 		ns.SetSetting("enabled", false)
 	elseif cmd == "names" then
 		ns.SetSetting("names", not s.names)
+	elseif cmd == "explored" then
+		ns.SetSetting("hideExplored", not s.hideExplored)
 	elseif cmd == "xp" or cmd == "all" then
 		ns.SetSetting("mode", cmd)
 	elseif cmd == "config" then
@@ -82,7 +85,7 @@ function Surveyor:HandleSlash(input)
 		end
 		return
 	else
-		self:Print("usage: /survey on | off | names | xp | all | config | probe | status")
+		self:Print("usage: /survey on | off | names | explored | xp | all | config | probe | status")
 		return
 	end
 	self:PrintStatus()
