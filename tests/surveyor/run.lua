@@ -140,6 +140,21 @@ else
     print("SKIP overlays: Surveyor/Data/Overlays.lua not present")
 end
 
+local mapAreasFile = io.open("Surveyor/Data/MapAreas.lua", "r")
+if mapAreasFile then
+    mapAreasFile:close()
+    test("map areas name known areas by numeric map id", function()
+        assert(loadfile("Surveyor/Data/MapAreas.lua"))("Surveyor", ns)
+        assert(type(ns.MapAreas) == "table" and count(ns.MapAreas) > 0, "MapAreas empty")
+        for mapID, areaId in pairs(ns.MapAreas) do
+            assert(type(mapID) == "number", "map id " .. tostring(mapID))
+            assert(type(areaId) == "number" and ns.Areas[areaId], "MapAreas[" .. mapID .. "] = " .. tostring(areaId) .. " not in Areas")
+        end
+    end)
+else
+    print("SKIP map areas: Surveyor/Data/MapAreas.lua not present")
+end
+
 test("Elwynn Forest zone covers Goldshire and Northshire", function()
     assert(ns.Zones[0][12], "Zones[0][12] missing")
     assert(ns.Zones[0][12][7] >= ns.Borders[0][87][7] + ns.Borders[0][9][7], "zone 12 chunk count")
@@ -756,37 +771,40 @@ test("map: probe reports the player's map, data area and explored ids", function
     _G.GetSubZoneText = function() return "Test Vale" end
     _G.GetZoneText = function() return "Test Zone" end
     local out = Map.Probe()
-    equal(#out, 10, "line count")
+    equal(#out, 12, "line count")
     equal(out[1], "map 100 type 3", "map line")
-    equal(out[2], "player 0.3125, 0.5625", "position line")
-    assert(out[3]:find("world continent 0: x ", 1, true) == 1 and out[3]:find("(grid 10.50, 20.50)", 1, true), out[3])
-    equal(out[4], "data area 900 Test Vale: level 5, root 950 Test Zone", "data area line")
-    equal(out[5], 'subzone "Test Vale", zone "Test Zone"', "zone text line")
-    equal(out[6], "baked overlays for map 100: 3", "baked overlay count")
-    equal(out[7], "explored textures from the client: 3, matched 2", "texture counts")
+    equal(out[2], "zone: 950 Test Zone (by overlap)", "zone line")
+    equal(out[3], "areas on this map: 2", "area count line")
+    equal(out[4], "player 0.3125, 0.5625", "position line")
+    assert(out[5]:find("world continent 0: x ", 1, true) == 1 and out[5]:find("(grid 10.50, 20.50)", 1, true), out[5])
+    equal(out[6], "data area 900 Test Vale: level 5, root 950 Test Zone", "data area line")
+    equal(out[7], 'subzone "Test Vale", zone "Test Zone"', "zone text line")
+    equal(out[8], "baked overlays for map 100: 3", "baked overlay count")
+    equal(out[9], "explored textures from the client: 3, matched 2", "texture counts")
     local parts = { "900 Test Vale" }
     for id = 1001, 1019 do
         parts[#parts + 1] = id .. " " .. id
     end
     parts[#parts + 1] = "..."
-    equal(out[8], "explored areas by overlay: " .. table.concat(parts, ", "), "matched ids, 20 then ...")
-    equal(out[9], "data area 900 in the explored set: yes", "player's area in the set")
-    equal(out[10], "position API not used on this map; the overlays decide", "position API skipped on an overlay map")
+    equal(out[10], "explored areas by overlay: " .. table.concat(parts, ", "), "matched ids, 20 then ...")
+    equal(out[11], "data area 900 in the explored set: yes", "player's area in the set")
+    equal(out[12], "position API not used on this map; the overlays decide", "position API skipped on an overlay map")
     mock.textures = { tex(OV[2]) }
     out = Map.Probe()
-    equal(out[8], "explored areas by overlay: 901 Quiet Hollow", "one matched id")
-    equal(out[9], "data area 900 in the explored set: no", "player's area not in the set")
-    equal(#out, 10, "still no position lines")
+    equal(out[10], "explored areas by overlay: 901 Quiet Hollow", "one matched id")
+    equal(out[11], "data area 900 in the explored set: no", "player's area not in the set")
+    equal(#out, 12, "still no position lines")
     _G.C_Map.GetBestMapForUnit = function() return 700 end
     out = Map.Probe()
-    equal(out[6], "baked overlays for map 700: none", "no baked overlays")
-    equal(out[7], "explored ids at player: 2", "position probe follows on a map without overlays")
-    equal(out[8], "  900 (Test Vale): in Borders yes, layer verdict explored", "known id on the fallback map")
-    equal(out[9], "  4242 (4242): in Borders no, layer verdict n/a", "unknown id on the fallback map")
+    equal(out[2], "zone: 950 Test Zone (by overlap)", "zone line on map 700")
+    equal(out[8], "baked overlays for map 700: none", "no baked overlays")
+    equal(out[9], "explored ids at player: 2", "position probe follows on a map without overlays")
+    equal(out[10], "  900 (Test Vale): in Borders yes, layer verdict explored", "known id on the fallback map")
+    equal(out[11], "  4242 (4242): in Borders no, layer verdict n/a", "unknown id on the fallback map")
     _G.C_Map.GetBestMapForUnit = function() return 100 end
     _G.C_MapExplorationInfo = nil
     out = Map.Probe()
-    equal(out[7], "C_MapExplorationInfo.GetExploredMapTextures missing", "missing textures API")
+    equal(out[9], "C_MapExplorationInfo.GetExploredMapTextures missing", "missing textures API")
     equal(out[#out], "position API not used on this map; the overlays decide", "overlay map never reaches the position API")
     _G.C_Map.GetBestMapForUnit = nil
     out = Map.Probe()
@@ -807,7 +825,7 @@ test("map: without overlay data the layer paints and probes from the position AP
     _G.C_Map.GetBestMapForUnit = function() return 100 end
     _G.C_Map.GetPlayerMapPosition = function() return { x = 0.3125, y = 0.5625 } end
     local out = M.Probe()
-    equal(out[6], "baked overlays for map 100: none", "no Overlays table")
+    equal(out[8], "baked overlays for map 100: none", "no Overlays table")
     _G.C_MapExplorationInfo = nil
     f.scripts.OnEvent(f, "MAP_EXPLORATION_UPDATED")
     M.Paint()
@@ -852,6 +870,85 @@ test("map: opacity 50 halves the alpha of edges, shadows and names", function()
     M.Invalidate()
     f.scripts.OnUpdate(f, 0.2)
     sameColor(shown(f.lines)[2], GOLD, 0.9, "edge back at 100%")
+end)
+
+-- The Azshara shape (uiMap 1447): its own zone 1600 overlaps the map rect only 57%
+-- (its box reaches north of the map), while a tiny foreign root 1700 lies fully inside.
+local function zoneCase(mapAreas)
+    installMocks()
+    mapInfo[1447] = { mapType = 3 }
+    local t = {
+        Settings = { enabled = true, mode = "xp", names = true, thickness = 2 },
+        Areas = {
+            [1600] = { "Big Zone", 0, 0, 1, 0 },
+            [1601] = { "Shore", 1600, 5, 2, 0 },
+            [1603] = { "Deep Cove", 1601, 5, 3, 0 },
+            [1700] = { "The Great Sea", 0, 5, 4, 0 },
+        },
+        Borders = { [0] = {
+            [1601] = { 9, 17, 10, 18, 9, 17, 1, { { 9, 17, 10, 17, 10, 18, 9, 18 } } },
+            [1603] = { 11, 18, 12, 19, 11, 18, 1, { { 11, 18, 12, 18, 12, 19, 11, 19 } } },
+            [1700] = { 13, 20, 14, 21, 13, 20, 1, { { 13, 20, 14, 20, 14, 21, 13, 21 } } },
+        } },
+        Zones = { [0] = {
+            [1600] = { 8, 10, 16, 24, 9, 17, 2, { { 9, 17, 10, 17, 10, 18, 9, 18 } } },
+            [1700] = { 13, 20, 14, 21, 13, 20, 1, { { 13, 20, 14, 20, 14, 21, 13, 21 } } },
+        } },
+        MapAreas = mapAreas,
+    }
+    local M = loadMap(t)
+    equal(M.Init(), true, "Init")
+    local f = created[#created]
+    mock.mapID = 1447
+    M.Paint()
+    local drawn = {}
+    for _, fs in ipairs(shown(f.strings)) do
+        drawn[#drawn + 1] = fs.text
+    end
+    table.sort(drawn)
+    _G.C_Map.GetBestMapForUnit = function() return 1447 end
+    _G.C_Map.GetPlayerMapPosition = function() return nil end
+    local out = M.Probe()
+    mock.mapID = 100
+    return table.concat(drawn, ", "), out, #shown(f.lines)
+end
+
+test("map: the baked map assignment picks the zone; its subzones resolve to their root", function()
+    local drawn, out, lines = zoneCase({ [1447] = 1600 })
+    equal(drawn, "Deep Cove, Shore", "only the assigned zone's areas")
+    equal(lines, 16, "two areas: four edges over four shadows each")
+    equal(#out, 4, "probe stops at the missing position")
+    equal(out[1], "map 1447 type 3", "map line")
+    equal(out[2], "zone: 1600 Big Zone (assigned)", "assigned zone line")
+    equal(out[3], "areas on this map: 2", "area count line")
+    equal(out[4], "player position unavailable (C_Map.GetPlayerMapPosition)", "existing line follows")
+    drawn, out = zoneCase({ [1447] = 1603 })
+    equal(drawn, "Deep Cove, Shore", "an assigned subzone resolves to its root")
+    equal(out[2], "zone: 1600 Big Zone (assigned)", "root named on the probe")
+end)
+
+test("map: without a usable assignment the 90% overlap rule picks the zone", function()
+    for _, case in ipairs({ { nil, "nil" }, { "x", "non-table" }, { { [1448] = 1600 }, "map missing" },
+        { { [1447] = "1600" }, "non-number value" } }) do
+        local drawn, out = zoneCase(case[1])
+        equal(drawn, "The Great Sea", case[2] .. ": only the foreign root fully inside")
+        equal(out[2], "zone: 1700 The Great Sea (by overlap)", case[2] .. ": overlap zone line")
+        equal(out[3], "areas on this map: 1", case[2] .. ": area count")
+    end
+end)
+
+test("map: the probe names no zone when none is chosen or the map draws nothing", function()
+    installMocks()
+    local M = loadMap({ Settings = sns.Settings, Areas = sns.Areas, Borders = sns.Borders })
+    _G.C_Map.GetBestMapForUnit = function() return 100 end
+    _G.C_Map.GetPlayerMapPosition = function() return nil end
+    local out = M.Probe()
+    equal(out[2], "zone: none, every area meeting the map", "no Zones table")
+    equal(out[3], "areas on this map: 3", "every area meeting the map, the neighbour's subzone included")
+    _G.C_Map.GetBestMapForUnit = function() return 200 end
+    out = M.Probe()
+    equal(out[2], "zone: none, nothing is drawn on this map", "continent map")
+    equal(out[3], "areas on this map: 0", "no areas on a continent map")
 end)
 
 -- Core and Options: Surveyor/Core.lua under a LibStub stand-in, Surveyor/Options.lua under a

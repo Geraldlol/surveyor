@@ -60,18 +60,28 @@ local function prepare(mapID)
 	end
 	local minX, maxX = math.min(a.x, b.x), math.max(a.x, b.x)
 	local minY, maxY = math.min(a.y, b.y), math.max(a.y, b.y)
-	-- A zone map keeps only areas whose root zone lies at least 90% inside the map,
-	-- so neighbouring zones' subzones at its edges stay hidden. When no zone does,
-	-- fall back to every area whose box meets the map.
-	local zoneSet
-	if ns.Areas and ns.Zones and ns.Zones[c] then
+	-- A zone map keeps only the areas of its own zone, so neighbouring zones'
+	-- subzones at its edges stay hidden. The client's map assignment (baked
+	-- ns.MapAreas) names that zone; without it, every root zone lying at least 90%
+	-- inside the map counts. When neither gives a zone, fall back to every area
+	-- whose box meets the map.
+	local zoneSet, zoneBy = nil, "none"
+	local assigned = type(ns.MapAreas) == "table" and ns.MapAreas[mapID]
+	if ns.Areas and type(assigned) == "number" then
+		zoneSet, zoneBy = { [Grid.RootOf(ns.Areas, assigned) or assigned] = true }, "assigned"
+	elseif ns.Areas and ns.Zones and ns.Zones[c] then
 		for zid, z in pairs(ns.Zones[c]) do
 			if Grid.OverlapRatio(minX, maxX, minY, maxY, Grid.BoxToWorld(z)) >= 0.9 then
-				zoneSet = zoneSet or {}
+				zoneSet, zoneBy = zoneSet or {}, "overlap"
 				zoneSet[zid] = true
 			end
 		end
 	end
+	local zones = {}
+	for zid in pairs(zoneSet or {}) do
+		zones[#zones + 1] = zid
+	end
+	table.sort(zones)
 	local ids = {}
 	for id, e in pairs(source) do
 		if Grid.RectsMeet(minX, maxX, minY, maxY, Grid.BoxToWorld(e))
@@ -81,7 +91,7 @@ local function prepare(mapID)
 	end
 	table.sort(ids)
 	return {
-		id = mapID, continent = c, source = source, ids = ids,
+		id = mapID, continent = c, source = source, ids = ids, zoneBy = zoneBy, zones = zones,
 		x00 = a.x, y00 = a.y, x11 = b.x, y11 = b.y,
 		nx = {}, ny = {}, px = {}, py = {},
 	}
@@ -497,6 +507,23 @@ function Map.Probe()
 	end
 	local info = C_Map.GetMapInfo and C_Map.GetMapInfo(mapID)
 	add("map %s type %s", tostring(mapID), tostring(info and info.mapType))
+	local m = maps[mapID]
+	if m == nil and C_Map.GetMapInfo and C_Map.GetWorldPosFromMapPos and CreateVector2D then
+		m = prepare(mapID)
+		maps[mapID] = m
+	end
+	if not m then
+		add("zone: none, nothing is drawn on this map")
+	elseif m.zoneBy == "none" then
+		add("zone: none, every area meeting the map")
+	else
+		local parts = {}
+		for i, zid in ipairs(m.zones) do
+			parts[i] = zid .. " " .. areaName(zid)
+		end
+		add("zone: %s (%s)", table.concat(parts, ", "), m.zoneBy == "assigned" and "assigned" or "by overlap")
+	end
+	add("areas on this map: %d", m and #m.ids or 0)
 	local pos = C_Map.GetPlayerMapPosition and C_Map.GetPlayerMapPosition(mapID, "player")
 	if not (pos and pos.x and pos.y) then
 		add("player position unavailable (C_Map.GetPlayerMapPosition)")
@@ -533,11 +560,6 @@ function Map.Probe()
 	end
 	add("subzone \"%s\", zone \"%s\"", tostring(GetSubZoneText and GetSubZoneText()),
 		tostring(GetZoneText and GetZoneText()))
-	local m = maps[mapID]
-	if m == nil and C_Map.GetMapInfo and C_Map.GetWorldPosFromMapPos and CreateVector2D then
-		m = prepare(mapID)
-		maps[mapID] = m
-	end
 	if m then
 		refreshExplored(m)
 	end

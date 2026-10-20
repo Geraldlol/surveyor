@@ -17,7 +17,7 @@ py -3 tools/surveyor-data/build.py --sources $cache --build 1.60.1.70450 --produ
 py -3 tools/run-addon-tests.py tests/surveyor/run.lua
 ```
 
-`--check` regenerates in memory, compares all five outputs byte for byte with
+`--check` regenerates in memory, compares all six outputs byte for byte with
 `Surveyor/Data/`, writes nothing, and exits 1 on drift. A missing cache file, a
 CSV found in neither lookup directory, or a malformed input exits 2.
 `--out <dir>` writes elsewhere (the tests use it). `--inputs <dir>` names the
@@ -57,6 +57,8 @@ Under `--inputs` (committed in this repo, because the cache does not carry them)
   `TextureHeight`, `OffsetX`, `OffsetY`, `AreaID_0` to `AreaID_3`.
 - `wago/<build>/UiMapXMapArt.csv`: wago.tools export of `UiMapXMapArt` for the
   build: `UiMapArtID`, `UiMapID` (one art can serve several maps or phases).
+- `wago/<build>/UiMapAssignment.csv`: wago.tools export of `UiMapAssignment` for
+  the build: `ID`, `UiMapID`, `OrderIndex`, `MapID`, `AreaID`.
 
 From the WDT the build reads `MAID` (64 x 64 tiles, root ADT FileDataID first
 of 8 u32 per tile). From each root ADT it reads the 256 `MCNK` headers:
@@ -118,6 +120,16 @@ All files are deterministic: sorted ids, LF, tabs, no timestamps or paths.
   An overlay whose art has no `UiMapXMapArt` row is dropped and counted first;
   of the rest, one with no area id is dropped and counted. The manifest's
   `overlays` block records `maps`, `entries`, `droppedNoUiMap`, `droppedNoArea`.
+- `Surveyor/Data/MapAreas.lua`: one sorted table, `ns.MapAreas = { [uiMapID] = areaId, ... }`,
+  the area the client's `UiMapAssignment` table gives each world map (for example
+  1447 -> 16, Azshara). The addon uses it to pick a zone map's zone and keeps its
+  bounding-box overlap rule only as a fallback. A row is kept when its `MapID` is 0
+  or 1, its `AreaID` is above 0 and that area is in `Areas.lua` (owns a terrain
+  chunk or is an ancestor of one); of several kept rows for one uiMapID the lowest
+  `OrderIndex` wins (then the lowest `ID`). Rows are dropped and counted in that
+  order: another map, no area, area not in `Areas.lua` (Ironforge and Undercity,
+  whose areas have no terrain chunk). The manifest's `mapAreas` block records
+  `entries`, `droppedOtherMap`, `droppedNoArea`, `droppedUnknownArea`.
 
 Generated Lua carries `-- luacheck: no max line length`; a loop is one line.
 

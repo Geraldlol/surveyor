@@ -2,7 +2,8 @@
 """Build Surveyor's exploration-border tables from the Forever client's terrain.
 
 Offline and read only: reads Map.csv, AreaTable.csv, LiquidType.csv, the WDTs of maps 0 and 1
-and every root ADT from a Polestar CASC cache, WorldMapOverlay.csv and UiMapXMapArt.csv
+and every root ADT from a Polestar CASC cache, WorldMapOverlay.csv, UiMapXMapArt.csv
+and UiMapAssignment.csv
 from the cache or the committed inputs, and writes Surveyor/Data/*.lua plus MANIFEST.json. `--check` regenerates in memory and compares byte for byte
 without writing anything. Standard library only. See README.md.
 """
@@ -29,7 +30,7 @@ POSITION_TOLERANCE = 0.01
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = REPO / "Surveyor" / "Data"
 DEFAULT_INPUTS = Path(__file__).resolve().parent / "inputs"
-OUTPUT_NAMES = ("Areas.lua", "Borders0.lua", "Borders1.lua", "Overlays.lua", "MANIFEST.json")
+OUTPUT_NAMES = ("Areas.lua", "Borders0.lua", "Borders1.lua", "Overlays.lua", "MapAreas.lua", "MANIFEST.json")
 OVERLAY_AREA_COLUMNS = ("AreaID_0", "AreaID_1", "AreaID_2", "AreaID_3")
 
 
@@ -262,6 +263,38 @@ def read_overlays(overlay_text: str, map_art_text: str) -> Overlays:
             per_map.setdefault(ui_map, {})[int(row["ID"])] = entry
     by_map = {m: sorted(entries.values()) for m, entries in sorted(per_map.items())}
     return Overlays(by_map, no_map, no_area)
+
+
+@dataclass
+class MapAreas:
+    by_map: dict  # uiMapID -> AreaID
+    dropped_other_map: int  # rows whose MapID is not 0 or 1
+    dropped_no_area: int  # rows (on map 0 or 1) whose AreaID is 0 or below
+    dropped_unknown_area: int  # rows (with an area) whose AreaID is not in Areas.lua (no terrain chunk)
+
+
+def read_map_areas(csv_text: str, areas) -> MapAreas:
+    """uiMapID -> AreaID from UiMapAssignment, by header name; the lowest OrderIndex wins per uiMapID.
+
+    areas: the area ids Areas.lua carries, so every emitted AreaID resolves in ns.Areas.
+    """
+    best: dict[int, tuple[int, int, int]] = {}  # uiMapID -> (OrderIndex, ID, AreaID)
+    other_map = no_area = unknown = 0
+    for row in _rows(csv_text):
+        area_id = int(row["AreaID"])
+        if int(row["MapID"]) not in MAPS:
+            other_map += 1
+        elif area_id <= 0:
+            no_area += 1
+        elif area_id not in areas:
+            unknown += 1
+        else:
+            ui_map = int(row["UiMapID"])
+            cand = (int(row["OrderIndex"]), int(row["ID"]), area_id)
+            if ui_map not in best or cand < best[ui_map]:
+                best[ui_map] = cand
+    by_map = {m: best[m][2] for m in sorted(best)}
+    return MapAreas(by_map, other_map, no_area, unknown)
 
 
 # --------------------------------------------------------------------------
@@ -558,6 +591,18 @@ def emit_overlays(build: str, ov: Overlays) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
+def emit_map_areas(build: str, ma: MapAreas) -> bytes:
+    lines = header(build)
+    lines += [
+        "-- [uiMapID] = AreaID: the area UiMapAssignment gives the map (MapID 0 or 1, lowest OrderIndex)",
+        "ns.MapAreas = {",
+    ]
+    for ui_map, area_id in ma.by_map.items():
+        lines.append(f"\t[{ui_map}] = {area_id},")
+    lines.append("}")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
 def emit_manifest(
     build: str,
     product: str,
@@ -566,6 +611,7 @@ def emit_manifest(
     areas_kept: int,
     hashes: dict,
     overlays: Overlays,
+    map_areas: MapAreas,
 ) -> bytes:
     doc = {
         "build": build,
@@ -577,6 +623,12 @@ def emit_manifest(
             "entries": sum(len(e) for e in overlays.by_map.values()),
             "droppedNoUiMap": overlays.dropped_no_ui_map,
             "droppedNoArea": overlays.dropped_no_area,
+        },
+        "mapAreas": {
+            "entries": len(map_areas.by_map),
+            "droppedOtherMap": map_areas.dropped_other_map,
+            "droppedNoArea": map_areas.dropped_no_area,
+            "droppedUnknownArea": map_areas.dropped_unknown_area,
         },
         "maps": {
             str(m.map_id): {
@@ -616,6 +668,7 @@ def generate(
     read_file,
     overlay_csv: bytes,
     map_art_csv: bytes,
+    assignment_csv: bytes,
 ) -> dict[str, bytes]:
     """read_file(fdid) -> bytes. Returns output file name -> bytes."""
     wdts = read_map_wdts(map_csv.decode("utf-8-sig"))
@@ -632,10 +685,12 @@ def generate(
     for m in maps:
         owners.update(m.owners)
     keep = with_ancestors(areas, owners)
+    map_areas = read_map_areas(assignment_csv.decode("utf-8-sig"), keep)
     hashes = {
         "AreaTable.csv": hashlib.sha256(area_csv).hexdigest(),
         "LiquidType.csv": hashlib.sha256(liquid_csv).hexdigest(),
         "Map.csv": hashlib.sha256(map_csv).hexdigest(),
+        "UiMapAssignment.csv": hashlib.sha256(assignment_csv).hexdigest(),
         "UiMapXMapArt.csv": hashlib.sha256(map_art_csv).hexdigest(),
         "WorldMapOverlay.csv": hashlib.sha256(overlay_csv).hexdigest(),
     }
@@ -643,7 +698,8 @@ def generate(
     for m in maps:
         out[f"Borders{m.map_id}.lua"] = emit_borders(build, m)
     out["Overlays.lua"] = emit_overlays(build, overlays)
-    out["MANIFEST.json"] = emit_manifest(build, product, maps, areas, len(keep), hashes, overlays)
+    out["MapAreas.lua"] = emit_map_areas(build, map_areas)
+    out["MANIFEST.json"] = emit_manifest(build, product, maps, areas, len(keep), hashes, overlays, map_areas)
     return out
 
 
@@ -697,6 +753,7 @@ def main(argv=None) -> int:
             read_file,
             read_csv("WorldMapOverlay.csv"),
             read_csv("UiMapXMapArt.csv"),
+            read_csv("UiMapAssignment.csv"),
         )
     except (BuildError, OSError, KeyError, ValueError) as error:
         print(f"surveyor-data: {error}", file=sys.stderr)

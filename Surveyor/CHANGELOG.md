@@ -15,6 +15,7 @@
   Blizzard's own zone names.
 - A zone map draws only the areas of zones lying at least 90% inside it, not the subzones of
   neighbouring zones at its edges.
+- A zone map's own zone now comes from the client's map assignment (baked `MapAreas`), so Azshara draws its areas; the 90% rule stays the fallback and `/survey probe` names the zone and how it was chosen.
 - Options page under Esc > Options > AddOns (`/survey config`): enabled, mode, area names, line
   thickness (1 to 6 px), line opacity (10 to 100%) and the minimap button.
 - Hide explored areas (options checkbox or `/survey explored`): explored areas draw no border, shadow or name.
