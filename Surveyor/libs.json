@@ -1,0 +1,13 @@
+{
+  "source": {
+    "url": "https://github.com/WoWUIDev/Ace3",
+    "commit": "88e0a1733fcfc8b8f09dd86ae71eee7a780c2980"
+  },
+  "libs": [
+    "LibStub",
+    "CallbackHandler-1.0",
+    "AceAddon-3.0",
+    "AceConsole-3.0",
+    "AceDB-3.0"
+  ]
+}

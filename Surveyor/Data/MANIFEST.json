@@ -1,0 +1,53 @@
+{
+  "areas": 863,
+  "build": "1.60.1.70450",
+  "inputs": {
+    "sha256": {
+      "AreaTable.csv": "0dd594a9b4f6eb80ddcf793f40b4d1d74b332363b76dfd06f73b0515a20830e8",
+      "Map.csv": "63e3681e1d37c2860ed4744511201121dd1391b8351ecb97d41ece33dc7b4f24"
+    }
+  },
+  "maps": {
+    "0": {
+      "areas": 448,
+      "chunks": 188416,
+      "otherContinent": {
+        "chunks": 0,
+        "ids": []
+      },
+      "skipped": {
+        "areaZero": 12256,
+        "notInAreaTable": 0,
+        "notInAreaTableIds": []
+      },
+      "tiles": 736,
+      "vertices": {
+        "borders": 17592,
+        "zones": 3228
+      },
+      "wdtFileDataID": 775971,
+      "zones": 28
+    },
+    "1": {
+      "areas": 415,
+      "chunks": 252928,
+      "otherContinent": {
+        "chunks": 0,
+        "ids": []
+      },
+      "skipped": {
+        "areaZero": 18192,
+        "notInAreaTable": 0,
+        "notInAreaTableIds": []
+      },
+      "tiles": 988,
+      "vertices": {
+        "borders": 21328,
+        "zones": 3254
+      },
+      "wdtFileDataID": 782779,
+      "zones": 26
+    }
+  },
+  "product": "wow_classic_beta"
+}

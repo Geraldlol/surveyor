@@ -1,0 +1,16 @@
+## Interface: 16001
+## Title: Surveyor
+## Notes: Outlines the areas that give discovery experience on the world map. /survey
+## Author: Geraldlol
+## Version: 0.1.0
+## SavedVariables: SurveyorDB
+## X-License: GPL-3.0-or-later
+## IconTexture: Interface\AddOns\Surveyor\Media\icon
+
+embeds.xml
+Data/Areas.lua
+Data/Borders0.lua
+Data/Borders1.lua
+Grid.lua
+Core.lua
+Map.lua
