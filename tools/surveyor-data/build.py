@@ -2,8 +2,8 @@
 """Build Surveyor's exploration-border tables from the Forever client's terrain.
 
 Offline and read only: reads Map.csv, AreaTable.csv, LiquidType.csv, the WDTs of maps 0 and 1
-and every root ADT from a Polestar CASC cache, and writes Surveyor/Data/*.lua
-plus MANIFEST.json. `--check` regenerates in memory and compares byte for byte
+and every root ADT from a Polestar CASC cache, WorldMapOverlay.csv and UiMapXMapArt.csv
+from the cache or the committed inputs, and writes Surveyor/Data/*.lua plus MANIFEST.json. `--check` regenerates in memory and compares byte for byte
 without writing anything. Standard library only. See README.md.
 """
 
@@ -28,7 +28,9 @@ POSITION_TOLERANCE = 0.01
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = REPO / "Surveyor" / "Data"
-OUTPUT_NAMES = ("Areas.lua", "Borders0.lua", "Borders1.lua", "MANIFEST.json")
+DEFAULT_INPUTS = Path(__file__).resolve().parent / "inputs"
+OUTPUT_NAMES = ("Areas.lua", "Borders0.lua", "Borders1.lua", "Overlays.lua", "MANIFEST.json")
+OVERLAY_AREA_COLUMNS = ("AreaID_0", "AreaID_1", "AreaID_2", "AreaID_3")
 
 
 class BuildError(Exception):
@@ -224,6 +226,42 @@ def with_ancestors(areas: dict[int, Area], ids) -> set[int]:
                 raise BuildError(f"area {aid} names parent {parent}, which is not in AreaTable")
             stack.append(parent)
     return keep
+
+
+@dataclass
+class Overlays:
+    by_map: dict  # uiMapID -> sorted list of (w, h, x, y, (areaId, ...))
+    dropped_no_ui_map: int  # overlays whose UiMapArtID has no UiMapXMapArt row
+    dropped_no_area: int  # overlays (with a map) whose AreaID_0..3 are all 0
+
+
+def read_overlays(overlay_text: str, map_art_text: str) -> Overlays:
+    """Join WorldMapOverlay to uiMapIDs through UiMapXMapArt, by header name."""
+    maps_of_art: dict[int, set] = {}
+    for row in _rows(map_art_text):
+        maps_of_art.setdefault(int(row["UiMapArtID"]), set()).add(int(row["UiMapID"]))
+    per_map: dict[int, dict] = {}
+    no_map = no_area = 0
+    for row in _rows(overlay_text):
+        ui_maps = maps_of_art.get(int(row["UiMapArtID"]))
+        if not ui_maps:
+            no_map += 1
+            continue
+        area_ids = tuple(a for a in (int(row[c]) for c in OVERLAY_AREA_COLUMNS) if a != 0)
+        if not area_ids:
+            no_area += 1
+            continue
+        entry = (
+            int(row["TextureWidth"]),
+            int(row["TextureHeight"]),
+            int(row["OffsetX"]),
+            int(row["OffsetY"]),
+            area_ids,
+        )
+        for ui_map in ui_maps:
+            per_map.setdefault(ui_map, {})[int(row["ID"])] = entry
+    by_map = {m: sorted(entries.values()) for m, entries in sorted(per_map.items())}
+    return Overlays(by_map, no_map, no_area)
 
 
 # --------------------------------------------------------------------------
@@ -495,14 +533,42 @@ def emit_borders(build: str, m: MapData) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
+def emit_overlays(build: str, ov: Overlays) -> bytes:
+    lines = header(build)
+    lines += [
+        "-- [uiMapID] = { { textureWidth, textureHeight, offsetX, offsetY, { areaId, ... } }, ... }",
+        "--   one entry per WorldMapOverlay row whose UiMapArtID maps to the uiMapID (UiMapXMapArt);",
+        "--   the four numbers match GetExploredMapTextures(uiMapID); the areas are its non-zero AreaID_0..3",
+        "ns.Overlays = {}",
+    ]
+    for ui_map, entries in ov.by_map.items():
+        body = ", ".join(
+            f"{{ {w}, {h}, {x}, {y}, {{ {', '.join(str(a) for a in ids)} }} }}" for w, h, x, y, ids in entries
+        )
+        lines.append(f"ns.Overlays[{ui_map}] = {{ {body} }}")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
 def emit_manifest(
-    build: str, product: str, maps: list[MapData], areas: dict[int, Area], areas_kept: int, hashes: dict
+    build: str,
+    product: str,
+    maps: list[MapData],
+    areas: dict[int, Area],
+    areas_kept: int,
+    hashes: dict,
+    overlays: Overlays,
 ) -> bytes:
     doc = {
         "build": build,
         "product": product,
         "inputs": {"sha256": hashes},
         "areas": areas_kept,
+        "overlays": {
+            "maps": len(overlays.by_map),
+            "entries": sum(len(e) for e in overlays.by_map.values()),
+            "droppedNoUiMap": overlays.dropped_no_ui_map,
+            "droppedNoArea": overlays.dropped_no_area,
+        },
         "maps": {
             str(m.map_id): {
                 "wdtFileDataID": m.wdt,
@@ -532,10 +598,18 @@ def emit_manifest(
 
 
 def generate(
-    build: str, product: str, map_csv: bytes, area_csv: bytes, liquid_csv: bytes, read_file
+    build: str,
+    product: str,
+    map_csv: bytes,
+    area_csv: bytes,
+    liquid_csv: bytes,
+    read_file,
+    overlay_csv: bytes,
+    map_art_csv: bytes,
 ) -> dict[str, bytes]:
     """read_file(fdid) -> bytes. Returns output file name -> bytes."""
     wdts = read_map_wdts(map_csv.decode("utf-8-sig"))
+    overlays = read_overlays(overlay_csv.decode("utf-8-sig"), map_art_csv.decode("utf-8-sig"))
     areas = read_areas(area_csv.decode("utf-8-sig"))
     ocean = read_ocean_types(liquid_csv.decode("utf-8-sig"))
     maps = []
@@ -552,11 +626,14 @@ def generate(
         "AreaTable.csv": hashlib.sha256(area_csv).hexdigest(),
         "LiquidType.csv": hashlib.sha256(liquid_csv).hexdigest(),
         "Map.csv": hashlib.sha256(map_csv).hexdigest(),
+        "UiMapXMapArt.csv": hashlib.sha256(map_art_csv).hexdigest(),
+        "WorldMapOverlay.csv": hashlib.sha256(overlay_csv).hexdigest(),
     }
     out = {"Areas.lua": emit_areas(build, areas, keep)}
     for m in maps:
         out[f"Borders{m.map_id}.lua"] = emit_borders(build, m)
-    out["MANIFEST.json"] = emit_manifest(build, product, maps, areas, len(keep), hashes)
+    out["Overlays.lua"] = emit_overlays(build, overlays)
+    out["MANIFEST.json"] = emit_manifest(build, product, maps, areas, len(keep), hashes, overlays)
     return out
 
 
@@ -564,16 +641,31 @@ def generate(
 # CLI
 
 
+def find_csv(name: str, dirs) -> Path:
+    """The first dirs/<name> that exists; a CSV in none of them is a build error."""
+    dirs = list(dirs)
+    for d in dirs:
+        if (d / name).is_file():
+            return d / name
+    raise BuildError(f"{name} is in none of: " + ", ".join(str(d) for d in dirs))
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sources", type=Path, required=True, help="Polestar CASC cache root (read only)")
     parser.add_argument("--build", required=True, help="client build, e.g. 1.60.1.70450")
     parser.add_argument("--product", required=True, help="CASC product, e.g. wow_classic_beta")
+    parser.add_argument(
+        "--inputs",
+        type=Path,
+        default=DEFAULT_INPUTS,
+        help="committed inputs root, searched after --sources (default: inputs next to this script)",
+    )
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="output directory (default Surveyor/Data)")
     parser.add_argument("--check", action="store_true", help="compare with the committed output; write nothing")
     args = parser.parse_args(argv)
 
-    wago = args.sources / "wago" / args.build
+    wago_dirs = (args.sources / "wago" / args.build, args.inputs / "wago" / args.build)
     casc = args.sources / "casc" / args.product / args.build
 
     def read_file(fdid: int) -> bytes:
@@ -582,14 +674,19 @@ def main(argv=None) -> int:
             raise BuildError(f"FileDataID {fdid} is not in the cache ({path.name}); nothing is fetched")
         return path.read_bytes()
 
+    def read_csv(name: str) -> bytes:
+        return find_csv(name, wago_dirs).read_bytes()
+
     try:
         outputs = generate(
             args.build,
             args.product,
-            (wago / "Map.csv").read_bytes(),
-            (wago / "AreaTable.csv").read_bytes(),
-            (wago / "LiquidType.csv").read_bytes(),
+            read_csv("Map.csv"),
+            read_csv("AreaTable.csv"),
+            read_csv("LiquidType.csv"),
             read_file,
+            read_csv("WorldMapOverlay.csv"),
+            read_csv("UiMapXMapArt.csv"),
         )
     except (BuildError, OSError, KeyError, ValueError) as error:
         print(f"surveyor-data: {error}", file=sys.stderr)

@@ -1,5 +1,6 @@
 -- Surveyor world map layer: outlines exploration areas on the world map canvas.
--- Reads ns.Borders, ns.Zones and ns.Areas (generated), ns.Grid, and ns.Settings
+-- Reads ns.Borders, ns.Zones and ns.Areas (generated), the optional ns.Overlays
+-- (generated), ns.Grid, and ns.Settings
 -- (a plain table Core points at the profile). No Ace calls, so tests can load it.
 local _, ns = ...
 
@@ -20,6 +21,7 @@ local lines, linesUsed, drawnLines = {}, 0, 0
 local labels, labelsUsed, drawnLabels = {}, 0, 0
 local maps = {} -- [uiMapID] = prepared map, or false when nothing is drawn there
 local names = {} -- [areaId] = display name
+local indexes = {} -- [uiMapID] = { ["x:y:w:h"] = { areaId, ... } }, or false without baked overlays
 local capNoticed = false
 local settingsRev, exploredRev = 0, 0
 local keyMap, keyW, keyH, keyScale, keySettings, keyExplored
@@ -126,27 +128,106 @@ local function inside(nx, ny)
 	return nx >= 0 and nx <= 1 and ny >= 0 and ny <= 1
 end
 
+-- Key of an overlay texture by its offset and size, or false when one is not a number.
+local function overlayKey(x, y, w, h)
+	if type(x) ~= "number" or type(y) ~= "number" or type(w) ~= "number" or type(h) ~= "number" then
+		return false
+	end
+	return x .. ":" .. y .. ":" .. w .. ":" .. h
+end
+
+-- Overlay key -> revealed area ids for a map, built once from ns.Overlays[mapID]
+-- ({ w, h, x, y, { areaId, ... } } entries); false when the map has none baked.
+local function overlayIndex(mapID)
+	local index = indexes[mapID]
+	if index ~= nil then
+		return index
+	end
+	index = false
+	local baked = type(ns.Overlays) == "table" and ns.Overlays[mapID]
+	if type(baked) == "table" and #baked > 0 then
+		index = {}
+		for i = 1, #baked do
+			local o = baked[i]
+			local key = type(o) == "table" and type(o[5]) == "table" and overlayKey(o[3], o[4], o[1], o[2])
+			if key then
+				local list = index[key] or {}
+				for j = 1, #o[5] do
+					list[#list + 1] = o[5][j]
+				end
+				index[key] = list
+			end
+		end
+	end
+	indexes[mapID] = index
+	return index
+end
+
+-- Refills set with the area ids of the client's explored overlay textures on the
+-- map that match the index. Returns the texture count and the matched count, or
+-- nil and a reason when the textures API is missing, errors or returns no list.
+local function fillExplored(mapID, index, set)
+	local api = C_MapExplorationInfo and C_MapExplorationInfo.GetExploredMapTextures
+	if not api then
+		return nil, "missing"
+	end
+	local ok, textures = pcall(api, mapID)
+	if not ok then
+		return nil, tostring(textures)
+	end
+	if type(textures) ~= "table" then
+		return nil, tostring(textures)
+	end
+	for k in pairs(set) do
+		set[k] = nil
+	end
+	local matched = 0
+	for i = 1, #textures do
+		local t = textures[i]
+		local ids = type(t) == "table" and index[overlayKey(t.offsetX, t.offsetY, t.textureWidth, t.textureHeight)]
+		if ids then
+			matched = matched + 1
+			for j = 1, #ids do
+				set[ids[j]] = true
+			end
+		end
+	end
+	return #textures, matched
+end
+
+-- Rebuilds map m's explored set at the current exploration revision. m.useSet
+-- stays false, leaving the position probe to decide, when the map has no baked
+-- overlays or the client gives no explored textures.
+local function refreshExplored(m)
+	m.exploredAt = exploredRev
+	m.useSet = false
+	local index = overlayIndex(m.id)
+	if index then
+		m.set = m.set or {}
+		m.useSet = fillExplored(m.id, index, m.set) ~= nil
+	end
+end
+
 local function isExplored(m, id, nx, ny)
+	if m.useSet then
+		return m.set[id] == true
+	end
+	-- Fallback: the client's ids at the area's interior point. It answers only
+	-- inside an overlay's hit rectangle, so it misses many explored areas.
 	local api = C_MapExplorationInfo and C_MapExplorationInfo.GetExploredAreaIDsAtPosition
 	if not api or not inside(nx, ny) then
 		return false
 	end
 	local found = api(m.id, CreateVector2D(nx, ny))
-	if type(found) ~= "table" or #found == 0 then
+	if type(found) ~= "table" then
 		return false
 	end
-	local known = false
 	for i = 1, #found do
 		if found[i] == id then
 			return true
 		end
-		if m.source[found[i]] then
-			known = true
-		end
 	end
-	-- Non-empty but naming no area this data knows: the client may report another
-	-- granularity, so count it as explored. In-game validation decides.
-	return not known
+	return false
 end
 
 local function nameOf(id, row)
@@ -278,6 +359,7 @@ function Map.Paint()
 	local mapID = WorldMapFrame:GetMapID()
 	local w, h = canvas:GetWidth(), canvas:GetHeight()
 	local scale = canvasScale()
+	local lastMap = keyMap
 	keyMap, keyW, keyH, keyScale, keySettings, keyExplored = mapID, w, h, scale, settingsRev, exploredRev
 	drawnLines, drawnLabels = 0, 0
 	if s and s.enabled and mapID and type(w) == "number" and type(h) == "number" and w > 0 and h > 0 then
@@ -287,6 +369,9 @@ function Map.Paint()
 			maps[mapID] = m
 		end
 		if m then
+			if m.exploredAt ~= exploredRev or lastMap ~= mapID then
+				refreshExplored(m)
+			end
 			frame:SetSize(w, h)
 			local t = tonumber(s.thickness) or 2
 			fade = math.max(0, math.min(100, tonumber(s.opacity) or 100)) / 100
@@ -415,12 +500,12 @@ function Map.Probe()
 		c, world = C_Map.GetWorldPosFromMapPos(mapID, pos)
 	end
 	local borders = ns.Borders and c and ns.Borders[c]
+	local hits = {}
 	if not (world and world.x and world.y) then
 		add("world position unavailable (C_Map.GetWorldPosFromMapPos)")
 	else
 		local gx, gy = Grid.FromWorld(world.x, world.y)
 		add("world continent %s: x %.1f, y %.1f (grid %.2f, %.2f)", tostring(c), world.x, world.y, gx, gy)
-		local hits = {}
 		for id, e in pairs(borders or {}) do
 			if Grid.Contains(e, gx, gy) then
 				hits[#hits + 1] = id
@@ -440,6 +525,44 @@ function Map.Probe()
 	end
 	add("subzone \"%s\", zone \"%s\"", tostring(GetSubZoneText and GetSubZoneText()),
 		tostring(GetZoneText and GetZoneText()))
+	local m = maps[mapID]
+	if m == nil and C_Map.GetMapInfo and C_Map.GetWorldPosFromMapPos and CreateVector2D then
+		m = prepare(mapID)
+		maps[mapID] = m
+	end
+	if m then
+		refreshExplored(m)
+	end
+	local index = overlayIndex(mapID)
+	if not index then
+		add("baked overlays for map %s: none", tostring(mapID))
+	else
+		add("baked overlays for map %s: %d", tostring(mapID), #ns.Overlays[mapID])
+		local set = {}
+		local count, matched = fillExplored(mapID, index, set)
+		if not count then
+			add("%s", matched == "missing" and "C_MapExplorationInfo.GetExploredMapTextures missing"
+				or "explored textures unavailable: " .. matched)
+		else
+			add("explored textures from the client: %d, matched %d", count, matched)
+			local ids = {}
+			for id in pairs(set) do
+				ids[#ids + 1] = id
+			end
+			table.sort(ids)
+			local parts = {}
+			for i = 1, math.min(#ids, 20) do
+				parts[i] = ids[i] .. " " .. areaName(ids[i])
+			end
+			if #ids > 20 then
+				parts[#parts + 1] = "..."
+			end
+			add("explored areas by overlay: %s", #ids > 0 and table.concat(parts, ", ") or "none")
+			for i = 1, #hits do
+				add("data area %d in the explored set: %s", hits[i], set[hits[i]] and "yes" or "no")
+			end
+		end
+	end
 	local api = C_MapExplorationInfo and C_MapExplorationInfo.GetExploredAreaIDsAtPosition
 	if not api then
 		add("C_MapExplorationInfo.GetExploredAreaIDsAtPosition missing")
@@ -451,11 +574,6 @@ function Map.Probe()
 		return out
 	end
 	add("explored ids at player: %d", #found)
-	local m = maps[mapID]
-	if m == nil and C_Map.GetMapInfo and C_Map.GetWorldPosFromMapPos and CreateVector2D then
-		m = prepare(mapID)
-		maps[mapID] = m
-	end
 	for i = 1, #found do
 		local id = found[i]
 		local e = m and m.source[id]

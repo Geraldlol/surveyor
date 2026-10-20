@@ -2,7 +2,7 @@
 
 An offline build that turns the Forever client's terrain area grid into the
 exploration-border tables the Surveyor addon loads. It reads a local CASC
-cache and two DB2 CSV exports, never fetches anything, and never writes into
+cache and DB2 CSV exports, never fetches anything, and never writes into
 the cache.
 
 ## Reproduce
@@ -17,9 +17,11 @@ py -3 tools/surveyor-data/build.py --sources $cache --build 1.60.1.70450 --produ
 py -3 tools/run-addon-tests.py tests/surveyor/run.lua
 ```
 
-`--check` regenerates in memory, compares all four outputs byte for byte with
-`Surveyor/Data/`, writes nothing, and exits 1 on drift. A missing cache file or
-a malformed input exits 2. `--out <dir>` writes elsewhere (the tests use it).
+`--check` regenerates in memory, compares all five outputs byte for byte with
+`Surveyor/Data/`, writes nothing, and exits 1 on drift. A missing cache file, a
+CSV found in neither lookup directory, or a malformed input exits 2.
+`--out <dir>` writes elsewhere (the tests use it). `--inputs <dir>` names the
+committed inputs root (default: `inputs` next to `build.py`).
 
 
 ## Getting the inputs
@@ -34,6 +36,10 @@ and 1) and every root ADT their `MAID` chunks name; a missing file stops the
 build with its FileDataID so you can fetch it.
 ## Input layout
 
+Each `<name>.csv` below is looked up first as `<sources>/wago/<build>/<name>.csv`
+and then as `<inputs>/wago/<build>/<name>.csv`; the first file found is used and
+its SHA-256 goes into the manifest.
+
 Under `--sources` (a Polestar CASC cache root, read only):
 
 - `wago/<build>/Map.csv`: `WdtFileDataID` of maps 0 (Eastern Kingdoms) and 1
@@ -43,6 +49,14 @@ Under `--sources` (a Polestar CASC cache root, read only):
 - `casc/<product>/<build>/<fdid>.blp`: client files by FileDataID (every file
   has the `.blp` suffix in this cache, whatever its type). The two WDTs and every
   root ADT they list must be present.
+
+Under `--inputs` (committed in this repo, because the cache does not carry them):
+
+- `wago/<build>/WorldMapOverlay.csv`: wago.tools export of the `WorldMapOverlay`
+  table for the build. Read by header name: `ID`, `UiMapArtID`, `TextureWidth`,
+  `TextureHeight`, `OffsetX`, `OffsetY`, `AreaID_0` to `AreaID_3`.
+- `wago/<build>/UiMapXMapArt.csv`: wago.tools export of `UiMapXMapArt` for the
+  build: `UiMapArtID`, `UiMapID` (one art can serve several maps or phases).
 
 From the WDT the build reads `MAID` (64 x 64 tiles, root ADT FileDataID first
 of 8 u32 per tile). From each root ADT it reads the 256 `MCNK` headers:
@@ -85,6 +99,19 @@ All files are deterministic: sorted ids, LF, tabs, no timestamps or paths.
   AreaTable, with the distinct ids), chunks whose area row names another
   continent, chunks dropped as open sea and the areas left with none (ids and
   names), area and zone counts, and vertex totals.
+
+- `Surveyor/Data/Overlays.lua`: one statement per uiMapID,
+  `ns.Overlays[uiMapID] = { { w, h, x, y, { areaId, ... } }, ... }`, where
+  `w, h, x, y` are the overlay's `TextureWidth`, `TextureHeight`, `OffsetX`,
+  `OffsetY` (the same four numbers `GetExploredMapTextures(uiMapID)` returns)
+  and the list holds its non-zero `AreaID_0..3` in column order. The overlay's
+  `UiMapArtID` is joined to every `UiMapID` that `UiMapXMapArt` gives it; an
+  overlay listed twice for one map (two phase rows) appears once. Maps are
+  sorted, and entries sorted by `(w, h, x, y, areas)`. The addon matches the
+  client's explored textures against these to learn which areas are explored.
+  An overlay whose art has no `UiMapXMapArt` row is dropped and counted first;
+  of the rest, one with no area id is dropped and counted. The manifest's
+  `overlays` block records `maps`, `entries`, `droppedNoUiMap`, `droppedNoArea`.
 
 Generated Lua carries `-- luacheck: no max line length`; a loop is one line.
 

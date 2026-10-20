@@ -111,6 +111,35 @@ test("known rows: Goldshire, Stormwind City, Orgrimmar", function()
     equal(ns.Areas[1637][1], "Orgrimmar", "1637 name")
 end)
 
+local overlaysFile = io.open("Surveyor/Data/Overlays.lua", "r")
+if overlaysFile then
+    overlaysFile:close()
+    test("overlays are well formed", function()
+        assert(loadfile("Surveyor/Data/Overlays.lua"))("Surveyor", ns)
+        assert(type(ns.Overlays) == "table" and count(ns.Overlays) > 0, "Overlays empty")
+        local function integer(v)
+            return type(v) == "number" and v == math.floor(v)
+        end
+        for mapID, list in pairs(ns.Overlays) do
+            assert(integer(mapID) and mapID > 0, "map id " .. tostring(mapID))
+            assert(type(list) == "table" and #list > 0, "Overlays[" .. mapID .. "] empty")
+            for i, o in ipairs(list) do
+                local where = "Overlays[" .. mapID .. "][" .. i .. "]"
+                assert(type(o) == "table" and #o == 5, where .. " shape")
+                -- a few client rows are 0 x 0 (Mulgore 1412 has one)
+                assert(integer(o[1]) and o[1] >= 0 and integer(o[2]) and o[2] >= 0, where .. " size")
+                assert(integer(o[3]) and integer(o[4]), where .. " offset")
+                assert(type(o[5]) == "table", where .. " area ids")
+                for _, id in ipairs(o[5]) do
+                    assert(integer(id) and id > 0, where .. " area id " .. tostring(id))
+                end
+            end
+        end
+    end)
+else
+    print("SKIP overlays: Surveyor/Data/Overlays.lua not present")
+end
+
 test("Elwynn Forest zone covers Goldshire and Northshire", function()
     assert(ns.Zones[0][12], "Zones[0][12] missing")
     assert(ns.Zones[0][12][7] >= ns.Borders[0][87][7] + ns.Borders[0][9][7], "zone 12 chunk count")
@@ -225,7 +254,9 @@ end)
 -- Map: Surveyor/Map.lua against a mock client. A synthetic zone map 100 covers
 -- chunk corners gx 8..16, gy 16..24 on continent 0; the canvas is 800x600 at scale 2.
 
-local mock = { mapID = 100, scale = 2, explored = {}, probes = 0, levelTypes = {}, texture = true }
+local mock = {
+    mapID = 100, scale = 2, explored = {}, probes = 0, textures = {}, textureCalls = 0, levelTypes = {}, texture = true,
+}
 local Region = {}
 Region.__index = Region
 function Region:Show() self.shown = true end
@@ -288,7 +319,10 @@ canvasMock.level, canvasMock.strata = 7, "HIGH"
 local created = {}
 local x00, y00 = Grid.ToWorld(8, 16)
 local x11, y11 = Grid.ToWorld(16, 24)
-local mapInfo = { [100] = { mapType = 3 }, [200] = { mapType = 2 }, [300] = { mapType = 4 }, [400] = { mapType = 3 }, [600] = { mapType = 3 } }
+local mapInfo = {
+    [100] = { mapType = 3 }, [200] = { mapType = 2 }, [300] = { mapType = 4 }, [400] = { mapType = 3 }, [600] = { mapType = 3 },
+    [700] = { mapType = 3 },
+}
 
 local saved = {}
 for _, name in ipairs({ "CreateFrame", "CreateVector2D", "WorldMapFrame", "C_Map", "C_MapExplorationInfo", "GetSubZoneText", "GetZoneText" }) do
@@ -323,6 +357,10 @@ local function installMocks()
             mock.probes = mock.probes + 1
             return mock.explored
         end,
+        GetExploredMapTextures = function()
+            mock.textureCalls = mock.textureCalls + 1
+            return mock.textures
+        end,
     }
 end
 
@@ -348,9 +386,25 @@ local sns = {
         -- 12.5% of its box lies on the test maps; its loop is entirely off them
         [960] = { 14, 16, 30, 24, 20, 20, 128, { { 17, 17, 29, 17, 29, 23, 17, 23 } } },
     } },
+    -- Map 100's overlays: Test Vale, Quiet Hollow, and one revealing 25 ids the data lacks.
+    Overlays = { [100] = {
+        { 256, 128, 10, 20, { 900 } },
+        { 128, 64, 300, 40, { 901 } },
+        { 64, 64, 500, 500, {} },
+    } },
     Settings = { enabled = true, mode = "xp", names = true, thickness = 2 },
     Print = function(msg) notices[#notices + 1] = msg end,
 }
+
+for id = 1001, 1025 do
+    table.insert(sns.Overlays[100][3][5], id)
+end
+local OV = sns.Overlays[100]
+
+-- The client's explored-texture entry for a baked overlay.
+local function tex(o)
+    return { textureWidth = o[1], textureHeight = o[2], offsetX = o[3], offsetY = o[4] }
+end
 
 local function loadMap(target)
     assert(loadfile("Surveyor/Grid.lua"))("Surveyor", target)
@@ -433,31 +487,85 @@ test("map: one xp area on a zone map paints four gold edges and its name", funct
     sameColor(fs[1], GOLD, 0.9, "label")
 end)
 
-test("map: exploration events repaint after the throttle; explored areas turn green", function()
-    mock.explored = { 900 }
+test("map: explored overlays decide the colour; events and map changes rebuild the set", function()
+    local probes = mock.probes
+    mock.explored = { 900, 901 }
+    mock.textures = { tex(OV[2]) }
+    layer.scripts.OnEvent(layer, "MAP_EXPLORATION_UPDATED")
+    layer.scripts.OnUpdate(layer, 0.2)
+    sameColor(shown(layer.lines)[2], GOLD, 0.9, "overlay absent: gold although the position API names the area")
+    sns.Settings.mode = "all"
+    Map.Invalidate()
+    Map.Paint()
+    local ls = shown(layer.lines)
+    equal(#ls, 16, "Test Vale and Quiet Hollow")
+    sameColor(ls[2], GOLD, 0.9, "Test Vale still gold")
+    sameColor(ls[10], GREEN, 0.55, "Quiet Hollow's overlay is explored")
+    sns.Settings.mode = "xp"
+    Map.Invalidate()
+    Map.Paint()
+    local calls = mock.textureCalls
+    mock.textures = { tex(OV[2]), tex(OV[1]) }
+    Map.Invalidate()
+    Map.Paint()
+    equal(mock.textureCalls, calls, "a settings repaint keeps the set")
+    sameColor(shown(layer.lines)[2], GOLD, 0.9, "no event yet: gold")
     layer.scripts.OnEvent(layer, "MAP_EXPLORATION_UPDATED")
     layer.scripts.OnUpdate(layer, 0.05)
     sameColor(shown(layer.lines)[2], GOLD, 0.9, "before the throttle")
     layer.scripts.OnUpdate(layer, 0.06)
-    local ls = shown(layer.lines)
+    equal(mock.textureCalls, calls + 1, "one rebuild for the new revision")
+    ls = shown(layer.lines)
     for i = 2, #ls, 2 do
-        sameColor(ls[i], GREEN, 0.55, "explored edge")
+        sameColor(ls[i], GREEN, 0.55, "newly explored edge")
         sameColor(ls[i - 1], BLACK, 0.5, "shadow under an explored edge")
     end
-    local probes = mock.probes
     layer.scripts.OnUpdate(layer, 0.2)
-    equal(mock.probes, probes, "no repaint when nothing changed")
+    equal(mock.textureCalls, calls + 1, "no rebuild when nothing changed")
+    mock.mapID = 200
+    layer.scripts.OnUpdate(layer, 0.2)
+    mock.mapID = 100
+    layer.scripts.OnUpdate(layer, 0.2)
+    equal(mock.textureCalls, calls + 2, "returning to the map rebuilds the set")
+    equal(mock.probes, probes, "the position API is not asked on a map with baked overlays")
+    mock.textures, mock.explored = {}, {}
+    layer.scripts.OnEvent(layer, "MAP_EXPLORATION_UPDATED")
+    layer.scripts.OnUpdate(layer, 0.2)
+    sameColor(shown(layer.lines)[2], GOLD, 0.9, "empty list: gold again")
+end)
+
+test("map: a map without baked overlays falls back to the position probe", function()
+    mock.mapID = 700
+    mock.textures = { tex(OV[1]) }
+    mock.explored = { 900 }
+    Map.Paint()
+    sameColor(shown(layer.lines)[2], GREEN, 0.55, "the position API names the area")
     mock.explored = { 12345 }
-    layer.scripts.OnEvent(layer, "MAP_EXPLORATION_UPDATED")
-    layer.scripts.OnUpdate(layer, 0.2)
-    sameColor(shown(layer.lines)[2], GREEN, 0.55, "unknown id counts as explored")
-    mock.explored = { 901 }
-    layer.scripts.OnEvent(layer, "MAP_EXPLORATION_UPDATED")
-    layer.scripts.OnUpdate(layer, 0.2)
-    sameColor(shown(layer.lines)[2], GOLD, 0.9, "another known area only")
+    Map.Paint()
+    sameColor(shown(layer.lines)[2], GOLD, 0.9, "an unknown id alone no longer counts as explored")
+    mock.explored, mock.textures = {}, {}
+    mock.mapID = 100
+    Map.Paint()
+end)
+
+test("map: a missing, failing or listless textures API falls back to the position probe", function()
+    local api = _G.C_MapExplorationInfo.GetExploredMapTextures
+    mock.explored = { 900 }
+    for label, fn in pairs({
+        missing = false,
+        failing = function() error("no textures") end,
+        listless = function() return nil end,
+    }) do
+        _G.C_MapExplorationInfo.GetExploredMapTextures = fn or nil
+        layer.scripts.OnEvent(layer, "MAP_EXPLORATION_UPDATED")
+        Map.Paint()
+        sameColor(shown(layer.lines)[2], GREEN, 0.55, "textures API " .. label)
+    end
+    _G.C_MapExplorationInfo.GetExploredMapTextures = api
     mock.explored = {}
     layer.scripts.OnEvent(layer, "MAP_EXPLORATION_UPDATED")
-    layer.scripts.OnUpdate(layer, 0.2)
+    Map.Paint()
+    sameColor(shown(layer.lines)[2], GOLD, 0.9, "textures API back")
 end)
 
 test("map: all mode adds the level-0 area; xp mode hides the leftovers", function()
@@ -585,28 +693,71 @@ end)
 
 test("map: probe reports the player's map, data area and explored ids", function()
     mock.explored = { 900, 4242 }
+    mock.textures = { tex(OV[1]), tex(OV[3]), { textureWidth = 1, textureHeight = 1, offsetX = 0, offsetY = 0 } }
     _G.C_Map.GetBestMapForUnit = function() return 100 end
     _G.C_Map.GetPlayerMapPosition = function() return { x = 0.3125, y = 0.5625 } end
     _G.GetSubZoneText = function() return "Test Vale" end
     _G.GetZoneText = function() return "Test Zone" end
     local out = Map.Probe()
-    equal(#out, 8, "line count")
+    equal(#out, 12, "line count")
     equal(out[1], "map 100 type 3", "map line")
     equal(out[2], "player 0.3125, 0.5625", "position line")
     assert(out[3]:find("world continent 0: x ", 1, true) == 1 and out[3]:find("(grid 10.50, 20.50)", 1, true), out[3])
     equal(out[4], "data area 900 Test Vale: level 5, root 950 Test Zone", "data area line")
     equal(out[5], 'subzone "Test Vale", zone "Test Zone"', "zone text line")
-    equal(out[6], "explored ids at player: 2", "explored count")
-    equal(out[7], "  900 (Test Vale): in Borders yes, layer verdict explored", "known id")
-    equal(out[8], "  4242 (4242): in Borders no, layer verdict n/a", "unknown id")
+    equal(out[6], "baked overlays for map 100: 3", "baked overlay count")
+    equal(out[7], "explored textures from the client: 3, matched 2", "texture counts")
+    local parts = { "900 Test Vale" }
+    for id = 1001, 1019 do
+        parts[#parts + 1] = id .. " " .. id
+    end
+    parts[#parts + 1] = "..."
+    equal(out[8], "explored areas by overlay: " .. table.concat(parts, ", "), "matched ids, 20 then ...")
+    equal(out[9], "data area 900 in the explored set: yes", "player's area in the set")
+    equal(out[10], "explored ids at player: 2", "explored count")
+    equal(out[11], "  900 (Test Vale): in Borders yes, layer verdict explored", "known id")
+    equal(out[12], "  4242 (4242): in Borders no, layer verdict n/a", "unknown id")
+    mock.textures = { tex(OV[2]) }
+    out = Map.Probe()
+    equal(out[8], "explored areas by overlay: 901 Quiet Hollow", "one matched id")
+    equal(out[9], "data area 900 in the explored set: no", "player's area not in the set")
+    equal(out[11], "  900 (Test Vale): in Borders yes, layer verdict unexplored", "verdict follows the set")
+    _G.C_Map.GetBestMapForUnit = function() return 700 end
+    out = Map.Probe()
+    equal(out[6], "baked overlays for map 700: none", "no baked overlays")
+    equal(out[7], "explored ids at player: 2", "position probe follows")
+    _G.C_Map.GetBestMapForUnit = function() return 100 end
     _G.C_MapExplorationInfo = nil
     out = Map.Probe()
+    equal(out[7], "C_MapExplorationInfo.GetExploredMapTextures missing", "missing textures API")
     equal(out[#out], "C_MapExplorationInfo.GetExploredAreaIDsAtPosition missing", "missing exploration API")
     _G.C_Map.GetBestMapForUnit = nil
     out = Map.Probe()
     equal(#out, 1, "missing best map stops early")
     equal(out[1], "C_Map.GetBestMapForUnit missing", "missing best map")
-    mock.explored = {}
+    mock.explored, mock.textures = {}, {}
+end)
+
+test("map: without overlay data the layer paints and probes from the position API", function()
+    installMocks()
+    local M = loadMap({ Settings = sns.Settings, Areas = sns.Areas, Borders = sns.Borders, Zones = sns.Zones })
+    equal(M.Init(), true, "Init")
+    local f = created[#created]
+    mock.explored = { 900 }
+    mock.textures = { tex(OV[1]) }
+    M.Paint()
+    sameColor(shown(f.lines)[2], GREEN, 0.55, "position API decides")
+    _G.C_Map.GetBestMapForUnit = function() return 100 end
+    _G.C_Map.GetPlayerMapPosition = function() return { x = 0.3125, y = 0.5625 } end
+    local out = M.Probe()
+    equal(out[6], "baked overlays for map 100: none", "no Overlays table")
+    _G.C_MapExplorationInfo = nil
+    f.scripts.OnEvent(f, "MAP_EXPLORATION_UPDATED")
+    M.Paint()
+    sameColor(shown(f.lines)[2], GOLD, 0.9, "no exploration API: gold")
+    out = M.Probe()
+    equal(out[#out], "C_MapExplorationInfo.GetExploredAreaIDsAtPosition missing", "probe without the API")
+    mock.explored, mock.textures = {}, {}
 end)
 
 test("map: frame level falls back to canvas + 1 without a usable pin levels manager", function()

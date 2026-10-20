@@ -5,7 +5,9 @@
     "sha256": {
       "AreaTable.csv": "0dd594a9b4f6eb80ddcf793f40b4d1d74b332363b76dfd06f73b0515a20830e8",
       "LiquidType.csv": "ebb29370ef7e939110609819b7beafa93528c0649e4cdcac19fa2aedd3a08bc4",
-      "Map.csv": "63e3681e1d37c2860ed4744511201121dd1391b8351ecb97d41ece33dc7b4f24"
+      "Map.csv": "63e3681e1d37c2860ed4744511201121dd1391b8351ecb97d41ece33dc7b4f24",
+      "UiMapXMapArt.csv": "81092d619701f0b31a3537129ec5667b38630b5291e211034971a1dde05678dc",
+      "WorldMapOverlay.csv": "d8c884864504ab54d7dc1e048fd4e49e41177bee5cce3d43d8ee3c339e284d85"
     }
   },
   "maps": {
@@ -75,6 +77,12 @@
       "wdtFileDataID": 782779,
       "zones": 26
     }
+  },
+  "overlays": {
+    "droppedNoArea": 0,
+    "droppedNoUiMap": 501,
+    "entries": 580,
+    "maps": 45
   },
   "product": "wow_classic_beta"
 }

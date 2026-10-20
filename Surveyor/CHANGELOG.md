@@ -5,6 +5,9 @@
 - World map layer: on a zone map, outlines every area with an exploration bit along its chunk
   boundary; undiscovered areas gold, discovered areas green. Continent and other map types draw
   nothing.
+- Explored (green) comes from the client's explored map overlays (`GetExploredMapTextures`) matched
+  against the baked WorldMapOverlay table; a map without baked overlays falls back to the position
+  probe, where an unknown area id no longer counts as explored. `/survey probe` reports the match.
 - Borders are solid lines over a black shadow,
   2 pixels thick by default; the shadow is left out on a map where it would push the total past the
   8000-line cap.

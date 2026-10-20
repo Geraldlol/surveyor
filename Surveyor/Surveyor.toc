@@ -11,6 +11,7 @@ embeds.xml
 Data/Areas.lua
 Data/Borders0.lua
 Data/Borders1.lua
+Data/Overlays.lua
 Grid.lua
 Core.lua
 Options.lua
