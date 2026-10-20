@@ -10,7 +10,6 @@ ns.Map = Map
 local MAX_LINES = 8000
 local THROTTLE = 0.1
 local MAP_ZONE = 3 -- Enum.UIMapType.Zone; every other map type draws nothing
-local LINE_TEXTURE = "Interface\\TaxiFrame\\UI-Taxi-Line"
 local UNEXPLORED = { 1, 0.82, 0.2, 0.9 }
 local EXPLORED = { 0.4, 0.75, 0.45, 0.55 }
 local SHADOW = { 0, 0, 0, 0.5 }
@@ -174,10 +173,9 @@ local function addLine(ax, ay, bx, by, color, thickness)
 	local l = lines[drawnLines]
 	if not l then
 		l = frame:CreateLine(nil, "ARTWORK")
-		local ok, set = pcall(l.SetTexture, l, LINE_TEXTURE)
-		if not (ok and set) then
-			l:SetColorTexture(1, 1, 1, 1)
-		end
+		-- Solid colour. The taxi-route texture was tried and is opaque only across
+		-- the line, so a long edge showed just a dash at its middle (in game, 2026-10-20).
+		l:SetColorTexture(1, 1, 1, 1)
 		lines[drawnLines] = l
 	end
 	l:SetStartPoint("TOPLEFT", frame, ax, -ay)
@@ -290,7 +288,7 @@ function Map.Paint()
 		end
 		if m then
 			frame:SetSize(w, h)
-			local t = tonumber(s.thickness) or 3
+			local t = tonumber(s.thickness) or 2
 			fade = math.max(0, math.min(100, tonumber(s.opacity) or 100)) / 100
 			draw(m, s, w, h, t / scale, shadowFits(m, s) and (t + 1) / scale or nil)
 		end

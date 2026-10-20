@@ -376,7 +376,6 @@ local function sameColor(r, rgb, alpha, message)
 end
 
 local GOLD, GREEN, BLACK = { 1, 0.82, 0.2 }, { 0.4, 0.75, 0.45 }, { 0, 0, 0 }
-local TAXI_LINE = [[Interface\TaxiFrame\UI-Taxi-Line]]
 local Map, layer
 
 test("map: a missing client API leaves the layer off", function()
@@ -409,8 +408,8 @@ test("map: one xp area on a zone map paints four gold edges and its name", funct
     for i, e in ipairs(expected) do
         for _, l in ipairs({ ls[2 * i - 1], ls[2 * i] }) do
             equal(l.layer, "ARTWORK", "line layer")
-            equal(l.texture, TAXI_LINE, "line texture")
-            equal(l.colorTexture, nil, "no colour-texture fallback")
+            equal(l.texture, nil, "no file texture")
+            equal(table.concat(l.colorTexture, ","), "1,1,1,1", "solid colour texture")
             equal(l.start[1], "TOPLEFT", "start anchor")
             equal(l.start[2], layer, "start relative")
             near(l.start[3], e[1], "edge " .. i .. " x1")
@@ -627,26 +626,6 @@ test("map: frame level falls back to canvas + 1 without a usable pin levels mana
     equal(created[#created].level, 8, "erroring manager falls back")
 end)
 
-test("map: a line texture that fails to load falls back to a solid colour", function()
-    for _, mode in ipairs({ false, "error" }) do
-        installMocks()
-        mock.texture = mode
-        local M = loadMap({ Settings = sns.Settings, Areas = sns.Areas, Borders = sns.Borders, Zones = sns.Zones })
-        equal(M.Init(), true, "Init")
-        local f = created[#created]
-        M.Paint()
-        local ls = shown(f.lines)
-        equal(#ls, 8, "lines shown")
-        for _, l in ipairs(ls) do
-            equal(l.texture, nil, tostring(mode) .. ": texture")
-            equal(table.concat(l.colorTexture, ","), "1,1,1,1", tostring(mode) .. ": colour texture")
-        end
-        sameColor(ls[1], BLACK, 0.5, "shadow keeps its colour")
-        sameColor(ls[2], GOLD, 0.9, "edge keeps its colour")
-    end
-    mock.texture = true
-end)
-
 test("map: opacity 50 halves the alpha of edges, shadows and names", function()
     installMocks()
     local settings = { enabled = true, mode = "xp", names = true, thickness = 2, opacity = 50 }
@@ -748,7 +727,7 @@ test("options: six controls in order with their kinds, ranges and choices", func
         { "SURVEYOR_ENABLED", "checkbox", "boolean", true },
         { "SURVEYOR_MODE", "dropdown", "string", "xp" },
         { "SURVEYOR_NAMES", "checkbox", "boolean", true },
-        { "SURVEYOR_THICKNESS", "slider", "number", 3 },
+        { "SURVEYOR_THICKNESS", "slider", "number", 2 },
         { "SURVEYOR_OPACITY", "slider", "number", 100 },
         { "SURVEYOR_MINIMAP", "checkbox", "boolean", true },
     }

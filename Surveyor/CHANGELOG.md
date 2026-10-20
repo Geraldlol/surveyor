@@ -5,8 +5,8 @@
 - World map layer: on a zone map, outlines every area with an exploration bit along its chunk
   boundary; undiscovered areas gold, discovered areas green. Continent and other map types draw
   nothing.
-- Borders use the taxi-route line texture (a solid line where it does not load) over a black shadow,
-  3 pixels thick by default; the shadow is left out on a map where it would push the total past the
+- Borders are solid lines over a black shadow,
+  2 pixels thick by default; the shadow is left out on a map where it would push the total past the
   8000-line cap.
 - Area names inside each outline on zone maps (toggle with `/survey names`); continent maps keep
   Blizzard's own zone names.

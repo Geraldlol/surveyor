@@ -6,7 +6,7 @@ local defaults = {
 		enabled = true,
 		mode = "xp", -- "xp": areas with ExplorationLevel > 0; "all": every area with a bit
 		names = true,
-		thickness = 3,
+		thickness = 2,
 		opacity = 100,
 		minimap = { hide = false, angle = 220 },
 	},
