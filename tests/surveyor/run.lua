@@ -192,19 +192,61 @@ test("grid: linear world-to-map and the off-map edge test", function()
     assert(not Grid.EdgeOutside(-0.5, 0.5, 0.5, -0.5), "outside on different sides")
 end)
 
+test("grid: point in area with a bbox prefilter and even-odd loops", function()
+    local L = { 0, 0, 4, 4, 0, 0, 12, { { 0, 0, 4, 0, 4, 2, 2, 2, 2, 4, 0, 4 } } }
+    assert(Grid.Contains(L, 1.5, 1.5), "inside")
+    assert(Grid.Contains(L, 3.5, 1.5), "inside the arm")
+    assert(not Grid.Contains(L, 3.5, 3.5), "in the box, outside the loop")
+    assert(not Grid.Contains(L, 5.5, 1.5), "outside the box")
+    local ring = { 0, 0, 6, 6, 0, 0, 32, { { 0, 0, 6, 0, 6, 6, 0, 6 }, { 2, 2, 2, 4, 4, 4, 4, 2 } } }
+    assert(Grid.Contains(ring, 1.5, 3.5), "ring")
+    assert(not Grid.Contains(ring, 3.5, 3.5), "hole")
+    assert(Grid.Contains(ring, 5.5, 5.5), "ring corner")
+    local g = ns.Borders[0][87]
+    assert(Grid.Contains(g, g[5] + 0.5, g[6] + 0.5), "Goldshire contains its interior chunk")
+end)
+
+test("grid: overlap ratio, root walk and the inverse conversion", function()
+    near(Grid.OverlapRatio(0, 10, 0, 10, 5, 15, 0, 10), 0.5, "half")
+    near(Grid.OverlapRatio(0, 10, 0, 10, 2, 3, 2, 3), 1, "inside")
+    near(Grid.OverlapRatio(0, 10, 0, 10, 20, 30, 0, 10), 0, "disjoint")
+    near(Grid.OverlapRatio(0, 10, 0, 10, 2, 2, 0, 10), 0, "empty box")
+    local areas = { [1] = { "a", 0 }, [2] = { "b", 1 }, [3] = { "c", 2 }, [10] = { "x", 11 }, [11] = { "y", 10 } }
+    equal(Grid.RootOf(areas, 3), 1, "two hops")
+    equal(Grid.RootOf(areas, 1), 1, "root of a root")
+    equal(Grid.RootOf(areas, 10), nil, "cycle")
+    equal(Grid.RootOf(areas, 99), nil, "unknown id")
+    equal(Grid.RootOf(ns.Areas, 87), 12, "Goldshire is in Elwynn")
+    local gx, gy = Grid.FromWorld(Grid.ToWorld(10.5, 20.25))
+    near(gx, 10.5, "FromWorld gx")
+    near(gy, 20.25, "FromWorld gy")
+end)
+
 -- Map: Surveyor/Map.lua against a mock client. A synthetic zone map 100 covers
 -- chunk corners gx 8..16, gy 16..24 on continent 0; the canvas is 800x600 at scale 2.
 
+local mock = { mapID = 100, scale = 2, explored = {}, probes = 0, levelTypes = {}, texture = true }
 local Region = {}
 Region.__index = Region
 function Region:Show() self.shown = true end
 function Region:Hide() self.shown = false end
 function Region:SetStartPoint(point, rel, x, y) self.start = { point, rel, x, y } end
 function Region:SetEndPoint(point, rel, x, y) self.finish = { point, rel, x, y } end
-function Region:SetColorTexture() end
+function Region:SetColorTexture(r, g, b, a) self.colorTexture = { r, g, b, a } end
+function Region:SetTexture(path)
+    if mock.texture == "error" then
+        error("bad texture")
+    end
+    if mock.texture == false then
+        return false
+    end
+    self.texture = path
+    return true
+end
 function Region:SetVertexColor(r, g, b) self.color = { r, g, b } end
 function Region:SetTextColor(r, g, b) self.color = { r, g, b } end
 function Region:SetAlpha(a) self.alpha = a end
+function Region:SetDrawLayer(layer, sublevel) self.layer, self.sublevel = layer, sublevel end
 function Region:SetThickness(t) self.thickness = t end
 function Region:SetText(t) self.text = t end
 function Region:ClearAllPoints() self.point = nil end
@@ -234,7 +276,6 @@ local function newFrame(parent)
     return setmetatable({ parent = parent, scripts = {}, events = {}, lines = {}, strings = {} }, Region)
 end
 
-local mock = { mapID = 100, scale = 2, explored = {}, probes = 0, levelTypes = {} }
 mock.levels = {
     GetValidFrameLevel = function(_, levelType)
         mock.levelTypes[#mock.levelTypes + 1] = levelType
@@ -247,10 +288,10 @@ canvasMock.level, canvasMock.strata = 7, "HIGH"
 local created = {}
 local x00, y00 = Grid.ToWorld(8, 16)
 local x11, y11 = Grid.ToWorld(16, 24)
-local mapInfo = { [100] = { mapType = 3 }, [200] = { mapType = 2 }, [300] = { mapType = 4 }, [400] = { mapType = 3 } }
+local mapInfo = { [100] = { mapType = 3 }, [200] = { mapType = 2 }, [300] = { mapType = 4 }, [400] = { mapType = 3 }, [600] = { mapType = 3 } }
 
 local saved = {}
-for _, name in ipairs({ "CreateFrame", "CreateVector2D", "WorldMapFrame", "C_Map", "C_MapExplorationInfo" }) do
+for _, name in ipairs({ "CreateFrame", "CreateVector2D", "WorldMapFrame", "C_Map", "C_MapExplorationInfo", "GetSubZoneText", "GetZoneText" }) do
     saved[name] = _G[name]
 end
 
@@ -288,9 +329,11 @@ end
 local notices = {}
 local sns = {
     Areas = {
-        [900] = { "Test Vale", 0, 5, 1, 0 },
-        [901] = { "Quiet Hollow", 0, 0, 2, 0 },
-        [903] = { "Busy Fields", 0, 5, 3, 0 },
+        [900] = { "Test Vale", 950, 5, 1, 0 },
+        [901] = { "Quiet Hollow", 950, 0, 2, 0 },
+        [903] = { "Busy Fields", 950, 5, 3, 0 },
+        [960] = { "Next Zone", 0, 0, 6, 0 },
+        [961] = { "Border Post", 960, 5, 7, 0 },
         [950] = { "Test Zone", 0, 0, 4, 0 },
         [999] = { "Far Away", 0, 5, 5, 0 },
     },
@@ -298,9 +341,12 @@ local sns = {
         [900] = { 10, 20, 12, 22, 10, 20, 4, { { 10, 20, 12, 20, 12, 22, 10, 22 } } },
         [901] = { 13, 17, 14, 18, 13, 17, 1, { { 13, 17, 14, 17, 14, 18, 13, 18 } } },
         [999] = { 100, 100, 101, 101, 100, 100, 1, { { 100, 100, 101, 100, 101, 101, 100, 101 } } },
+        [961] = { 15, 18, 16, 19, 15, 18, 1, { { 15, 18, 16, 18, 16, 19, 15, 19 } } },
     } },
     Zones = { [0] = {
         [950] = { 8, 16, 16, 24, 9, 17, 64, { { 9, 17, 15, 17, 15, 23 } } },
+        -- 12.5% of its box lies on the test maps; its loop is entirely off them
+        [960] = { 14, 16, 30, 24, 20, 20, 128, { { 17, 17, 29, 17, 29, 23, 17, 23 } } },
     } },
     Settings = { enabled = true, mode = "xp", names = true, thickness = 2 },
     Print = function(msg) notices[#notices + 1] = msg end,
@@ -329,7 +375,8 @@ local function sameColor(r, rgb, alpha, message)
     near(r.alpha, alpha, message .. " alpha")
 end
 
-local GOLD, GREEN, WHITE = { 1, 0.82, 0.2 }, { 0.4, 0.75, 0.45 }, { 0.9, 0.9, 0.9 }
+local GOLD, GREEN, BLACK = { 1, 0.82, 0.2 }, { 0.4, 0.75, 0.45 }, { 0, 0, 0 }
+local TAXI_LINE = [[Interface\TaxiFrame\UI-Taxi-Line]]
 local Map, layer
 
 test("map: a missing client API leaves the layer off", function()
@@ -357,19 +404,26 @@ test("map: one xp area on a zone map paints four gold edges and its name", funct
     equal(layer.size[1], 800, "layer width")
     equal(layer.size[2], 600, "layer height")
     local ls = shown(layer.lines)
-    equal(#ls, 4, "lines shown")
+    equal(#ls, 8, "lines shown: four edges over four shadows")
     local expected = { { 200, -300, 400, -300 }, { 400, -300, 400, -450 }, { 400, -450, 200, -450 }, { 200, -450, 200, -300 } }
     for i, e in ipairs(expected) do
-        local l = ls[i]
-        equal(l.layer, "ARTWORK", "line layer")
-        equal(l.start[1], "TOPLEFT", "start anchor")
-        equal(l.start[2], layer, "start relative")
-        near(l.start[3], e[1], "edge " .. i .. " x1")
-        near(l.start[4], e[2], "edge " .. i .. " y1")
-        near(l.finish[3], e[3], "edge " .. i .. " x2")
-        near(l.finish[4], e[4], "edge " .. i .. " y2")
-        near(l.thickness, 1, "thickness 2 / scale 2")
-        sameColor(l, GOLD, 0.9, "edge " .. i)
+        for _, l in ipairs({ ls[2 * i - 1], ls[2 * i] }) do
+            equal(l.layer, "ARTWORK", "line layer")
+            equal(l.texture, TAXI_LINE, "line texture")
+            equal(l.colorTexture, nil, "no colour-texture fallback")
+            equal(l.start[1], "TOPLEFT", "start anchor")
+            equal(l.start[2], layer, "start relative")
+            near(l.start[3], e[1], "edge " .. i .. " x1")
+            near(l.start[4], e[2], "edge " .. i .. " y1")
+            near(l.finish[3], e[3], "edge " .. i .. " x2")
+            near(l.finish[4], e[4], "edge " .. i .. " y2")
+        end
+        near(ls[2 * i - 1].thickness, 1.5, "shadow thickness (2 + 1) / scale 2")
+        sameColor(ls[2 * i - 1], BLACK, 0.5, "shadow " .. i)
+        equal(ls[2 * i - 1].sublevel, 0, "shadow " .. i .. " sublevel")
+        near(ls[2 * i].thickness, 1, "thickness 2 / scale 2")
+        equal(ls[2 * i].sublevel, 1, "edge " .. i .. " sublevel")
+        sameColor(ls[2 * i], GOLD, 0.9, "edge " .. i)
     end
     local fs = shown(layer.strings)
     equal(#fs, 1, "labels shown")
@@ -384,10 +438,12 @@ test("map: exploration events repaint after the throttle; explored areas turn gr
     mock.explored = { 900 }
     layer.scripts.OnEvent(layer, "MAP_EXPLORATION_UPDATED")
     layer.scripts.OnUpdate(layer, 0.05)
-    sameColor(shown(layer.lines)[1], GOLD, 0.9, "before the throttle")
+    sameColor(shown(layer.lines)[2], GOLD, 0.9, "before the throttle")
     layer.scripts.OnUpdate(layer, 0.06)
-    for _, l in ipairs(shown(layer.lines)) do
-        sameColor(l, GREEN, 0.55, "explored edge")
+    local ls = shown(layer.lines)
+    for i = 2, #ls, 2 do
+        sameColor(ls[i], GREEN, 0.55, "explored edge")
+        sameColor(ls[i - 1], BLACK, 0.5, "shadow under an explored edge")
     end
     local probes = mock.probes
     layer.scripts.OnUpdate(layer, 0.2)
@@ -395,11 +451,11 @@ test("map: exploration events repaint after the throttle; explored areas turn gr
     mock.explored = { 12345 }
     layer.scripts.OnEvent(layer, "MAP_EXPLORATION_UPDATED")
     layer.scripts.OnUpdate(layer, 0.2)
-    sameColor(shown(layer.lines)[1], GREEN, 0.55, "unknown id counts as explored")
+    sameColor(shown(layer.lines)[2], GREEN, 0.55, "unknown id counts as explored")
     mock.explored = { 901 }
     layer.scripts.OnEvent(layer, "MAP_EXPLORATION_UPDATED")
     layer.scripts.OnUpdate(layer, 0.2)
-    sameColor(shown(layer.lines)[1], GOLD, 0.9, "another known area only")
+    sameColor(shown(layer.lines)[2], GOLD, 0.9, "another known area only")
     mock.explored = {}
     layer.scripts.OnEvent(layer, "MAP_EXPLORATION_UPDATED")
     layer.scripts.OnUpdate(layer, 0.2)
@@ -409,14 +465,14 @@ test("map: all mode adds the level-0 area; xp mode hides the leftovers", functio
     sns.Settings.mode = "all"
     Map.Invalidate()
     layer.scripts.OnUpdate(layer, 0.2)
-    equal(#shown(layer.lines), 8, "lines in all mode")
+    equal(#shown(layer.lines), 16, "lines in all mode")
     equal(#shown(layer.strings), 2, "labels in all mode")
     sns.Settings.mode = "xp"
     Map.Invalidate()
     Map.Paint()
-    equal(#shown(layer.lines), 4, "lines in xp mode")
-    equal(#layer.lines, 8, "pool kept")
-    for i = 5, 8 do
+    equal(#shown(layer.lines), 8, "lines in xp mode")
+    equal(#layer.lines, 16, "pool kept")
+    for i = 9, 16 do
         equal(layer.lines[i].shown, false, "leftover line " .. i)
     end
     equal(layer.strings[2].shown, false, "leftover label")
@@ -427,13 +483,12 @@ test("map: all mode adds the level-0 area; xp mode hides the leftovers", functio
     sns.Settings.names = true
 end)
 
-test("map: continent maps draw zone outlines in white; other map types draw nothing", function()
+test("map: continent maps and other non-zone map types draw nothing", function()
     mock.mapID = 200
     Map.Paint()
-    local ls = shown(layer.lines)
-    equal(#ls, 3, "zone triangle edges")
-    sameColor(ls[1], WHITE, 0.7, "zone edge")
-    equal(shown(layer.strings)[1].text, "Test Zone", "zone label")
+    equal(#shown(layer.lines), 0, "continent map lines")
+    assert(sns.Settings.names, "names on")
+    equal(#shown(layer.strings), 0, "continent map labels")
     mock.mapID = 300
     Map.Paint()
     equal(#shown(layer.lines), 0, "dungeon map lines")
@@ -449,18 +504,54 @@ test("map: continent maps draw zone outlines in white; other map types draw noth
     sns.Settings.enabled = true
 end)
 
-test("map: the line cap stops at 8000 with one notice", function()
+-- Busy Fields (903) with a zig-zag loop of 2 * n edges, next to Test Vale's 4.
+local function busyFields(n)
     local loop = {}
-    for i = 1, 4100 do
+    for i = 1, n do
         loop[#loop + 1] = 13 + (i % 2)
         loop[#loop + 1] = 19
         loop[#loop + 1] = 13 + (i % 2)
         loop[#loop + 1] = 20
     end
     sns.Borders[0][903] = { 13, 19, 15, 21, 13, 19, 1, { loop } }
+end
+
+local function blackLines(list)
+    local n = 0
+    for _, l in ipairs(shown(list)) do
+        if l.color[1] == 0 and l.color[2] == 0 and l.color[3] == 0 then
+            n = n + 1
+        end
+    end
+    return n
+end
+
+test("map: shadows are left out when they would pass the 8000-line cap", function()
+    busyFields(1998) -- 3996 + 4 edges: shadows fit exactly
+    mock.mapID = 400
+    Map.Paint()
+    local ls = shown(layer.lines)
+    equal(#ls, 8000, "edges and shadows")
+    equal(blackLines(layer.lines), 4000, "one shadow per edge")
+    sameColor(ls[7999], BLACK, 0.5, "last shadow")
+    near(ls[7999].thickness, 1.5, "last shadow thickness")
+    sameColor(ls[8000], GOLD, 0.9, "last edge")
+    busyFields(1999) -- 3998 + 4 edges: shadows would make 8004
+    Map.Invalidate()
+    Map.Paint()
+    equal(#shown(layer.lines), 4002, "edges only")
+    equal(blackLines(layer.lines), 0, "no shadows")
+    equal(#notices, 0, "under the cap without shadows: no notice")
+    sns.Borders[0][903] = nil
+    mock.mapID = 100
+end)
+
+test("map: the line cap stops at 8000 with one notice", function()
+    busyFields(4100)
     mock.mapID = 400
     Map.Paint()
     equal(#shown(layer.lines), 8000, "lines at the cap")
+    equal(blackLines(layer.lines), 0, "no shadows over the cap")
     equal(#layer.lines, 8000, "pool size")
     equal(#notices, 1, "notices")
     Map.Invalidate()
@@ -468,6 +559,55 @@ test("map: the line cap stops at 8000 with one notice", function()
     equal(#notices, 1, "notice is one-time")
     sns.Borders[0][903] = nil
     mock.mapID = 100
+end)
+
+test("map: a zone map hides a neighbouring zone's subzone and draws its own", function()
+    sns.Settings.mode = "xp"
+    mock.mapID = 100
+    Map.Invalidate()
+    Map.Paint()
+    local ls = shown(layer.lines)
+    equal(#ls, 8, "only Test Vale's edges and their shadows")
+    for _, l in ipairs(ls) do
+        assert(l.start[3] <= 400 + 1e-6 and l.finish[3] <= 400 + 1e-6, "an edge of the neighbour's subzone was drawn")
+    end
+    local fs = shown(layer.strings)
+    equal(#fs, 1, "labels")
+    equal(fs[1].text, "Test Vale", "own subzone label")
+    local own = sns.Zones[0][950]
+    sns.Zones[0][950] = nil
+    mock.mapID = 600
+    Map.Paint()
+    equal(#shown(layer.lines), 16, "no zone of its own: every area meeting the map, neighbour included")
+    sns.Zones[0][950] = own
+    mock.mapID = 100
+    Map.Paint()
+end)
+
+test("map: probe reports the player's map, data area and explored ids", function()
+    mock.explored = { 900, 4242 }
+    _G.C_Map.GetBestMapForUnit = function() return 100 end
+    _G.C_Map.GetPlayerMapPosition = function() return { x = 0.3125, y = 0.5625 } end
+    _G.GetSubZoneText = function() return "Test Vale" end
+    _G.GetZoneText = function() return "Test Zone" end
+    local out = Map.Probe()
+    equal(#out, 8, "line count")
+    equal(out[1], "map 100 type 3", "map line")
+    equal(out[2], "player 0.3125, 0.5625", "position line")
+    assert(out[3]:find("world continent 0: x ", 1, true) == 1 and out[3]:find("(grid 10.50, 20.50)", 1, true), out[3])
+    equal(out[4], "data area 900 Test Vale: level 5, root 950 Test Zone", "data area line")
+    equal(out[5], 'subzone "Test Vale", zone "Test Zone"', "zone text line")
+    equal(out[6], "explored ids at player: 2", "explored count")
+    equal(out[7], "  900 (Test Vale): in Borders yes, layer verdict explored", "known id")
+    equal(out[8], "  4242 (4242): in Borders no, layer verdict n/a", "unknown id")
+    _G.C_MapExplorationInfo = nil
+    out = Map.Probe()
+    equal(out[#out], "C_MapExplorationInfo.GetExploredAreaIDsAtPosition missing", "missing exploration API")
+    _G.C_Map.GetBestMapForUnit = nil
+    out = Map.Probe()
+    equal(#out, 1, "missing best map stops early")
+    equal(out[1], "C_Map.GetBestMapForUnit missing", "missing best map")
+    mock.explored = {}
 end)
 
 test("map: frame level falls back to canvas + 1 without a usable pin levels manager", function()
@@ -485,6 +625,201 @@ test("map: frame level falls back to canvas + 1 without a usable pin levels mana
     M = loadMap({ Settings = sns.Settings })
     equal(M.Init(), true, "Init with a failing manager")
     equal(created[#created].level, 8, "erroring manager falls back")
+end)
+
+test("map: a line texture that fails to load falls back to a solid colour", function()
+    for _, mode in ipairs({ false, "error" }) do
+        installMocks()
+        mock.texture = mode
+        local M = loadMap({ Settings = sns.Settings, Areas = sns.Areas, Borders = sns.Borders, Zones = sns.Zones })
+        equal(M.Init(), true, "Init")
+        local f = created[#created]
+        M.Paint()
+        local ls = shown(f.lines)
+        equal(#ls, 8, "lines shown")
+        for _, l in ipairs(ls) do
+            equal(l.texture, nil, tostring(mode) .. ": texture")
+            equal(table.concat(l.colorTexture, ","), "1,1,1,1", tostring(mode) .. ": colour texture")
+        end
+        sameColor(ls[1], BLACK, 0.5, "shadow keeps its colour")
+        sameColor(ls[2], GOLD, 0.9, "edge keeps its colour")
+    end
+    mock.texture = true
+end)
+
+test("map: opacity 50 halves the alpha of edges, shadows and names", function()
+    installMocks()
+    local settings = { enabled = true, mode = "xp", names = true, thickness = 2, opacity = 50 }
+    local M = loadMap({ Settings = settings, Areas = sns.Areas, Borders = sns.Borders, Zones = sns.Zones })
+    equal(M.Init(), true, "Init")
+    local f = created[#created]
+    M.Paint()
+    local ls = shown(f.lines)
+    equal(#ls, 8, "lines shown")
+    for i = 2, #ls, 2 do
+        sameColor(ls[i - 1], BLACK, 0.25, "shadow at 50%")
+        sameColor(ls[i], GOLD, 0.45, "edge at 50%")
+    end
+    sameColor(shown(f.strings)[1], GOLD, 0.45, "label at 50%")
+    settings.opacity = 100
+    M.Invalidate()
+    f.scripts.OnUpdate(f, 0.2)
+    sameColor(shown(f.lines)[2], GOLD, 0.9, "edge back at 100%")
+end)
+
+-- Core and Options: Surveyor/Core.lua under a LibStub stand-in, Surveyor/Options.lua under a
+-- recording Settings API (the shape of tests/witchcraft/options.lua).
+
+local function settingsApi()
+    local api = { proxies = {}, controls = {}, opened = {} }
+    api.Settings = {
+        VarType = { Boolean = "boolean", Number = "number", String = "string" },
+        RegisterVerticalLayoutCategory = function(name) api.name = name; return { GetID = function() return 77 end }, {} end,
+        RegisterProxySetting = function(_, variable, varType, label, default, get, set)
+            local proxy = { variable = variable, varType = varType, label = label, default = default, get = get, set = set }
+            api.proxies[#api.proxies + 1] = proxy; api.proxies[variable] = proxy
+            return proxy
+        end,
+        CreateCheckbox = function(_, setting, tooltip) api.controls[#api.controls + 1] = { kind = "checkbox", setting = setting, tooltip = tooltip } end,
+        CreateSlider = function(_, setting, options, tooltip)
+            api.controls[#api.controls + 1] = { kind = "slider", setting = setting, options = options, tooltip = tooltip }
+        end,
+        CreateSliderOptions = function(min, max, step) return { min = min, max = max, step = step } end,
+        CreateDropdown = function(_, setting, options, tooltip)
+            api.controls[#api.controls + 1] = { kind = "dropdown", setting = setting, options = options, tooltip = tooltip }
+        end,
+        CreateControlTextContainer = function()
+            local data = {}
+            return { Add = function(_, value, label) data[#data + 1] = { value = value, label = label } end, GetData = function() return data end }
+        end,
+        RegisterAddOnCategory = function(category) api.registered = category end,
+        OpenToCategory = function(id) api.opened[#api.opened + 1] = id end,
+    }
+    return api
+end
+
+local function copy(t)
+    local out = {}
+    for k, v in pairs(t) do
+        out[k] = type(v) == "table" and copy(v) or v
+    end
+    return out
+end
+
+-- Loads Core.lua and Options.lua into a fresh namespace and runs OnInitialize with the
+-- given global Settings table (nil for a client without the API).
+local function loadCore(globalSettings)
+    local cns = { revs = 0, refreshes = 0, printed = {} }
+    local addon
+    local savedStub, savedSettings = _G.LibStub, _G.Settings
+    _G.LibStub = function(major)
+        if major == "AceAddon-3.0" then
+            return { NewAddon = function(_, name)
+                addon = { name = name }
+                function addon:RegisterChatCommand(cmd, method) self.command = { cmd, method } end
+                function addon:Print(msg) cns.printed[#cns.printed + 1] = msg end
+                function addon:Printf(fmt, ...) self:Print(string.format(fmt, ...)) end
+                return addon
+            end }
+        end
+        equal(major, "AceDB-3.0", "library requested")
+        return { New = function(_, _, defaults) return { profile = copy(defaults.profile) } end }
+    end
+    _G.Settings = globalSettings
+    local ok, err = pcall(function()
+        assert(loadfile("Surveyor/Core.lua"))("Surveyor", cns)
+        assert(loadfile("Surveyor/Options.lua"))("Surveyor", cns)
+        cns.Map = { Invalidate = function() cns.revs = cns.revs + 1 end }
+        cns.MinimapButton = { Refresh = function() cns.refreshes = cns.refreshes + 1 end }
+        addon:OnInitialize()
+    end)
+    _G.LibStub, _G.Settings = savedStub, savedSettings
+    assert(ok, err)
+    return cns, addon
+end
+
+test("options: six controls in order with their kinds, ranges and choices", function()
+    local cns = loadCore(nil)
+    local api = settingsApi()
+    equal(cns.Options.Register(api), 77, "the page returns the category the panel opens to")
+    equal(api.name, "Surveyor", "category name")
+    assert(api.registered, "the category is registered as an addon page")
+    local want = {
+        { "SURVEYOR_ENABLED", "checkbox", "boolean", true },
+        { "SURVEYOR_MODE", "dropdown", "string", "xp" },
+        { "SURVEYOR_NAMES", "checkbox", "boolean", true },
+        { "SURVEYOR_THICKNESS", "slider", "number", 3 },
+        { "SURVEYOR_OPACITY", "slider", "number", 100 },
+        { "SURVEYOR_MINIMAP", "checkbox", "boolean", true },
+    }
+    equal(#api.controls, #want, "controls")
+    equal(#api.proxies, #want, "proxies")
+    for i, w in ipairs(want) do
+        local c = api.controls[i]
+        equal(c.setting.variable, w[1], "control " .. i .. " variable")
+        equal(c.kind, w[2], w[1] .. " kind")
+        equal(c.setting.varType, w[3], w[1] .. " type")
+        equal(c.setting.default, w[4], w[1] .. " default")
+        assert(type(c.tooltip) == "string" and c.tooltip ~= "", w[1] .. " tooltip")
+    end
+    local thickness, opacity = api.controls[4].options, api.controls[5].options
+    equal(table.concat({ thickness.min, thickness.max, thickness.step }, ","), "1,6,1", "thickness range")
+    equal(table.concat({ opacity.min, opacity.max, opacity.step }, ","), "10,100,5", "opacity range")
+    local choices = api.controls[2].options()
+    equal(#choices, 2, "mode choices")
+    equal(choices[1].value, "xp", "first choice")
+    equal(choices[1].label, "Areas that give XP", "first label")
+    equal(choices[2].value, "all", "second choice")
+    equal(choices[2].label, "Every area with a map bit", "second label")
+end)
+
+test("options: proxies read the profile and write through SetSetting", function()
+    local cns = loadCore(nil)
+    local api = settingsApi()
+    cns.Options.Register(api)
+    equal(cns.Settings.opacity, 100, "opacity default")
+    api.proxies.SURVEYOR_OPACITY.set(50)
+    equal(cns.Settings.opacity, 50, "setter writes the profile")
+    equal(cns.revs, 1, "setter bumps the settings revision")
+    equal(cns.refreshes, 1, "setter refreshes the minimap button")
+    cns.Settings.thickness = 5
+    equal(api.proxies.SURVEYOR_THICKNESS.get(), 5, "getter reads the profile")
+    api.proxies.SURVEYOR_MODE.set("all")
+    equal(api.proxies.SURVEYOR_MODE.get(), "all", "mode round trip")
+    local minimap = api.proxies.SURVEYOR_MINIMAP
+    equal(minimap.get(), true, "button shown by default")
+    cns.Settings.minimap.angle = 135
+    minimap.set(false)
+    equal(cns.Settings.minimap.hide, true, "unchecking hides the button")
+    equal(cns.Settings.minimap.angle, 135, "the angle is kept")
+    equal(minimap.get(), false, "getter follows hide")
+    equal(cns.revs, 3, "every write bumps the revision")
+end)
+
+test("options: no Settings API registers nothing and /survey config prints a note", function()
+    local cns, addon = loadCore(nil)
+    equal(cns.Options.Register({}), nil, "a client without the Settings API gets no page")
+    equal(cns.Options.Register({ Settings = {} }), nil, "a Settings table without the layout call gets no page")
+    addon:HandleSlash("config")
+    equal(#cns.printed, 1, "one note")
+    assert(cns.printed[1]:find("Settings API", 1, true), "the note names the missing API")
+    addon:HandleSlash("off")
+    equal(cns.Settings.enabled, false, "slash writes the profile")
+    equal(cns.revs, 1, "slash bumps the revision through SetSetting")
+end)
+
+test("options: OnInitialize registers the page and /survey config opens it", function()
+    local api = settingsApi()
+    local cns, addon = loadCore(api.Settings)
+    assert(api.registered, "registered at initialise")
+    equal(addon.command[1], "survey", "slash command")
+    _G.Settings = api.Settings
+    local ok, err = pcall(addon.HandleSlash, addon, "config")
+    _G.Settings = nil
+    assert(ok, err)
+    equal(#api.opened, 1, "panel opened once")
+    equal(api.opened[1], 77, "opened to the category id")
+    equal(#cns.printed, 0, "no note")
 end)
 
 for name, value in pairs(saved) do

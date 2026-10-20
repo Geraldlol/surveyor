@@ -21,17 +21,17 @@ py -3 tools/run-addon-tests.py tests/surveyor/run.lua
 `Surveyor/Data/`, writes nothing, and exits 1 on drift. A missing cache file or
 a malformed input exits 2. `--out <dir>` writes elsewhere (the tests use it).
 
+
 ## Getting the inputs
 
 The build does not download anything. Fill the cache yourself from
-[wago.tools](https://wago.tools): the two CSV exports of `Map` and `AreaTable`
-for the client build go under `wago/<build>/`, and the client files go under
-`casc/<product>/<build>/<FileDataID>.blp` (the raw bytes of
+[wago.tools](https://wago.tools): the CSV exports of `Map`, `AreaTable` and
+`LiquidType` for the client build go under `wago/<build>/`, and the client
+files go under `casc/<product>/<build>/<FileDataID>.blp` (the raw bytes of
 `https://wago.tools/api/casc/<FileDataID>?download&version=<build>`). The
 files needed are the two WDTs named by `Map.csv` (`WdtFileDataID` of maps 0
 and 1) and every root ADT their `MAID` chunks name; a missing file stops the
 build with its FileDataID so you can fetch it.
-
 ## Input layout
 
 Under `--sources` (a Polestar CASC cache root, read only):
@@ -48,6 +48,17 @@ From the WDT the build reads `MAID` (64 x 64 tiles, root ADT FileDataID first
 of 8 u32 per tile). From each root ADT it reads the 256 `MCNK` headers:
 `indexX` (0x04), `indexY` (0x08), `areaId` (0x34). The first chunk's position
 (0x68) must agree with the grid formula below within 0.01 yd, or the build fails.
+
+Open sea is dropped before tracing. Open-ocean chunks carry the neighbouring
+zone's areaId (or a sea zone's), which would draw zone outlines as tile-shaped
+rectangles far out to sea. A chunk counts as open sea when its `MH2O` entry has an
+ocean instance covering the whole chunk (xOffset 0, yOffset 0, width 8,
+height 8) whose `minHeight` is above the chunk's highest terrain vertex (zBase at
+MCNK 0x70 plus the largest of the 145 `MCVT` heights). Ocean liquid types come
+from `wago/<build>/LiquidType.csv` (`SoundBank == 1` or `Flags & 0x400`). The file
+is required. Height alone is not used, because dry land such as Bloodhoof Village
+and Un'Goro lies below z 0. An area whose every chunk is open sea is left out of
+`ns.Borders` and `ns.Zones` but stays in `ns.Areas`.
 
 ## Output format
 
@@ -72,7 +83,8 @@ All files are deterministic: sorted ids, LF, tabs, no timestamps or paths.
 - `Surveyor/Data/MANIFEST.json`: build, product, input SHA-256s, and per map
   the WDT FileDataID, tile and chunk counts, skipped chunks (area 0 or not in
   AreaTable, with the distinct ids), chunks whose area row names another
-  continent, area and zone counts, and vertex totals.
+  continent, chunks dropped as open sea and the areas left with none (ids and
+  names), area and zone counts, and vertex totals.
 
 Generated Lua carries `-- luacheck: no max line length`; a loop is one line.
 
@@ -83,3 +95,7 @@ Generated Lua carries `-- luacheck: no max line length`; a loop is one line.
   and an indoor part of an outdoor area is drawn as its terrain chunk.
 - The border is the chunk outline (33.3 yd steps), the same resolution the
   terrain areaId has; it is not smoothed.
+- The sea test works per whole chunk. A coastal chunk that is partly ocean, or
+  whose terrain peaks above the surface (reefs, rocks), is kept, so coasts stay
+  ragged by up to one chunk. Inland water (lakes, rivers, slime, magma) is never
+  dropped.

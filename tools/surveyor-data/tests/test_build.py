@@ -52,21 +52,48 @@ def chunk(tag: str, data: bytes) -> bytes:
     return tag[::-1].encode("ascii") + struct.pack("<I", len(data)) + data
 
 
-def mcnk(col, row, ix, iy, area, shift=0.0) -> bytes:
+LIQUID_CSV = (
+    "ID,Name,Texture_0,Flags,SoundBank,SoundID\n"
+    "1,Water,a,0,0,0\n"
+    "2,Ocean,b,1024,1,0\n"
+    "5,Slime,c,0,3,0\n"
+    "1250,Forever Ocean,d,1024,0,0\n"
+    "1287,Sea bank only,e,0,1,0\n"
+)
+
+
+def mcnk(col, row, ix, iy, area, shift=0.0, z=0.0, peak=0.0) -> bytes:
+    """MCNK with a 128-byte header and an MCVT whose highest vertex is z + peak."""
     head = bytearray(128)
     struct.pack_into("<II", head, 0x04, ix, iy)
     struct.pack_into("<I", head, 0x34, area)
     gx, gy = col * 16 + ix, row * 16 + iy
-    struct.pack_into("<fff", head, 0x68, build.ORIGIN - gy * build.CHUNK + shift, build.ORIGIN - gx * build.CHUNK, 0.0)
-    return chunk("MCNK", bytes(head) + b"\0" * 16)
+    struct.pack_into("<fff", head, 0x68, build.ORIGIN - gy * build.CHUNK + shift, build.ORIGIN - gx * build.CHUNK, z)
+    heights = [peak - 5.0] * 144 + [peak]
+    return chunk("MCNK", bytes(head) + chunk("MCVT", struct.pack("<145f", *heights)) + chunk("MCNR", b"\0" * 16))
 
 
-def adt(col, row, area_of, count=256, shift=0.0) -> bytes:
-    """area_of(gx, gy) -> areaId. Chunks are written in reverse index order to prove indexX/indexY are read."""
-    body = chunk("MVER", struct.pack("<I", 18)) + chunk("MHDR", b"\0" * 64) + chunk("MH2O", b"")
+def mh2o(liquid: dict) -> bytes:
+    """liquid: (ix, iy) -> [(liquidType, minHeight, x, y, w, h), ...]; other slots have layerCount 0."""
+    heads, body = bytearray(256 * 12), bytearray()
+    for (ix, iy), layers in liquid.items():
+        struct.pack_into("<III", heads, (iy * 16 + ix) * 12, 256 * 12 + len(body), len(layers), 0)
+        for t, m, x, y, w, h in layers:
+            body += struct.pack("<HHffBBBBII", t, 0, m, m + 1.0, x, y, w, h, 0, 0)
+    return chunk("MH2O", bytes(heads) + bytes(body))
+
+
+def adt(col, row, area_of, count=256, shift=0.0, liquid=None, ground=None) -> bytes:
+    """area_of(gx, gy) -> areaId. Chunks are written in reverse index order to prove indexX/indexY are read.
+    liquid None writes no MH2O chunk; ground maps (ix, iy) -> (zBase, peak), default (0, 0)."""
+    body = chunk("MVER", struct.pack("<I", 18)) + chunk("MHDR", b"\0" * 64)
+    if liquid is not None:
+        body += mh2o(liquid)
+    ground = ground or {}
     cells = [(ix, iy) for iy in range(16) for ix in range(16)][::-1][:count]
     for n, (ix, iy) in enumerate(cells):
-        body += mcnk(col, row, ix, iy, area_of(col * 16 + ix, row * 16 + iy), shift if n == 0 else 0.0)
+        z, peak = ground.get((ix, iy), (0.0, 0.0))
+        body += mcnk(col, row, ix, iy, area_of(col * 16 + ix, row * 16 + iy), shift if n == 0 else 0.0, z, peak)
     return body
 
 
@@ -120,8 +147,8 @@ class ParsingTests(unittest.TestCase):
     def test_adt_reads_256_chunks_into_global_grid(self):
         chunks = build.parse_adt(adt(2, 3, lambda gx, gy: gx * 10000 + gy), 2, 3)
         self.assertEqual(len(chunks), 256)
-        self.assertEqual({(gx, gy) for gx, gy, _ in chunks}, {(32 + i, 48 + j) for i in range(16) for j in range(16)})
-        self.assertTrue(all(a == gx * 10000 + gy for gx, gy, a in chunks))
+        self.assertEqual({(gx, gy) for gx, gy, _, _ in chunks}, {(32 + i, 48 + j) for i in range(16) for j in range(16)})
+        self.assertTrue(all(a == gx * 10000 + gy and not sea for gx, gy, a, sea in chunks))
 
     def test_adt_with_wrong_chunk_count_is_an_error(self):
         with self.assertRaises(build.BuildError):
@@ -235,6 +262,7 @@ class ModelTests(unittest.TestCase):
 
     def test_roll_up_and_skips(self):
         chunks = [(0, 0, 9), (1, 0, 87), (2, 0, 88), (3, 0, 0), (4, 0, 777), (5, 0, 777), (6, 0, 778), (7, 0, 500)]
+        chunks = [c + (False,) for c in chunks]
         m = build.build_map(0, 100, [(0, 0, chunks)], self.areas)
         self.assertEqual(sorted(m.borders), [9, 87, 88, 500])
         self.assertEqual(sorted(m.zones), [12, 500])
@@ -263,10 +291,64 @@ def synthetic_inputs():
     return map_csv(100, 200).encode(), area_csv(AREAS).encode(), files
 
 
+class SeaTests(unittest.TestCase):
+    OCEAN = frozenset({2, 1250})
+
+    def sea_flags(self, liquid, ground=None):
+        chunks = build.parse_adt(adt(0, 0, lambda gx, gy: 1, liquid=liquid, ground=ground), 0, 0, self.OCEAN)
+        return {(gx, gy) for gx, gy, _, sea in chunks if sea}
+
+    def test_ocean_types_from_liquid_csv(self):
+        self.assertEqual(build.read_ocean_types(LIQUID_CSV), {2, 1250, 1287})
+
+    def test_no_mh2o_chunk_means_no_sea(self):
+        self.assertEqual(self.sea_flags(None), set())
+
+    def test_layer_count_zero_means_no_sea(self):
+        self.assertEqual(self.sea_flags({}), set())
+
+    def test_full_ocean_above_terrain_is_dropped(self):
+        liquid = {(3, 4): [(1250, 0.0, 0, 0, 8, 8)], (5, 5): [(1, 9.0, 0, 0, 8, 8), (2, 0.5, 0, 0, 8, 8)]}
+        ground = {(3, 4): (-20.0, 5.0), (5, 5): (-1.0, 1.0)}
+        self.assertEqual(self.sea_flags(liquid, ground), {(3, 4), (5, 5)})
+
+    def test_partial_ocean_is_kept(self):
+        liquid = {(1, 1): [(1250, 0.0, 0, 0, 8, 7)], (2, 1): [(1250, 0.0, 1, 0, 7, 8)]}
+        self.assertEqual(self.sea_flags(liquid, {(1, 1): (-50.0, 0.0), (2, 1): (-50.0, 0.0)}), set())
+
+    def test_ocean_below_the_terrain_max_is_kept(self):
+        liquid = {(1, 1): [(1250, 0.0, 0, 0, 8, 8)], (2, 2): [(1250, 0.0, 0, 0, 8, 8)]}
+        ground = {(1, 1): (-30.0, 31.0), (2, 2): (0.0, 0.0)}  # peak 1.0 above the sea; peak exactly at sea level
+        self.assertEqual(self.sea_flags(liquid, ground), set())
+
+    def test_full_non_ocean_is_kept(self):
+        liquid = {(1, 1): [(1, 10.0, 0, 0, 8, 8)], (2, 1): [(5, 10.0, 0, 0, 8, 8)]}
+        self.assertEqual(self.sea_flags(liquid, {(1, 1): (-50.0, 0.0), (2, 1): (-50.0, 0.0)}), set())
+
+    def test_area_left_empty_by_sea_leaves_borders_and_zones_but_stays_in_areas(self):
+        import json
+
+        mcsv, acsv, files = synthetic_inputs()
+        files[2001] = adt(
+            11,
+            20,
+            lambda gx, gy: 500 if gx % 16 == 0 else 14,
+            liquid={(0, iy): [(1250, 0.0, 0, 0, 8, 8)] for iy in range(16)},
+            ground={(0, iy): (-40.0, 10.0) for iy in range(16)},
+        )
+        out = build.generate("1.60.1.70450", "wow_classic_beta", mcsv, acsv, LIQUID_CSV.encode(), files.__getitem__)
+        b1 = out["Borders1.lua"].decode()
+        self.assertNotIn("[500]", b1)
+        self.assertIn("ns.Borders[1][14] = ", b1)
+        self.assertIn('\t[500] = { "CopyTown", 0, 3, 201, 1 },\n', out["Areas.lua"].decode())
+        sea = json.loads(out["MANIFEST.json"])["maps"]["1"]["openSea"]
+        self.assertEqual(sea, {"chunksDropped": 16, "areasDropped": [{"id": 500, "name": "CopyTown"}]})
+
+
 class EmitterTests(unittest.TestCase):
     def run_generate(self):
         mcsv, acsv, files = synthetic_inputs()
-        return build.generate("1.60.1.70450", "wow_classic_beta", mcsv, acsv, files.__getitem__)
+        return build.generate("1.60.1.70450", "wow_classic_beta", mcsv, acsv, LIQUID_CSV.encode(), files.__getitem__)
 
     def test_output_is_stable_across_runs(self):
         first, second = self.run_generate(), self.run_generate()
@@ -315,6 +397,7 @@ class CliTests(unittest.TestCase):
             (src / "casc" / "P" / "B").mkdir(parents=True)
             (src / "wago" / "B" / "Map.csv").write_bytes(mcsv)
             (src / "wago" / "B" / "AreaTable.csv").write_bytes(acsv)
+            (src / "wago" / "B" / "LiquidType.csv").write_bytes(LIQUID_CSV.encode())
             for fdid, data in files.items():
                 (src / "casc" / "P" / "B" / f"{fdid}.blp").write_bytes(data)
             out = Path(tmp) / "out"
@@ -330,6 +413,8 @@ class CliTests(unittest.TestCase):
                 self.assertEqual((out / "MANIFEST.json").read_bytes(), b"{}\n")
                 (src / "casc" / "P" / "B" / "2001.blp").unlink()
                 self.assertEqual(build.main(args), 2, "a missing cache file is a build error")
+                (src / "wago" / "B" / "LiquidType.csv").unlink()
+                self.assertEqual(build.main(args + ["--check"]), 2, "a missing LiquidType.csv is a build error")
 
 
 if __name__ == "__main__":

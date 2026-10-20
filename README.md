@@ -7,8 +7,7 @@ Every area that gives discovery XP has a hard edge, and that edge comes straight
 ## What you get
 
 - On a zone map, every area that awards exploration XP is outlined along its real border. Areas you haven't found yet are gold. Areas you've already discovered are green and faded.
-- On a continent map, the top-level zone outlines are drawn instead.
-- Area names sit inside each outline.
+- Area names sit inside each outline. Continent maps are left alone; Blizzard already names the zones there.
 - By default only areas that actually pay XP are shown. `/survey all` shows every area with a discovery flag, including the ones that only clear fog.
 
 ## Commands
@@ -19,7 +18,11 @@ Every area that gives discovery XP has a hard edge, and that edge comes straight
 /survey names      toggle the labels
 /survey xp         only areas that pay XP (default)
 /survey all        every area with a discovery flag
+/survey config     open the options page
+/survey probe      print what the client and the data say about where you stand
 ```
+
+The options page (Esc > Options > AddOns > Surveyor) has the same switches plus line thickness and opacity, and a toggle for the minimap button. Left-click the minimap button to show or hide the outlines, right-click it for the options, drag it to move it.
 
 ## Install
 
@@ -32,7 +35,7 @@ Copy the `Surveyor` folder into `World of Warcraft/_forever_/Interface/AddOns/` 
 ## Known gaps
 
 - Buildings and caves that override the terrain area (WMO interiors) aren't handled yet.
-- No minimap drawing yet.
+- No outlines on the minimap yet.
 - Forever only. It relies on map APIs that older clients don't have.
 
 ## Tests
@@ -40,6 +43,7 @@ Copy the `Surveyor` folder into `World of Warcraft/_forever_/Interface/AddOns/` 
 ```
 py -3 -m unittest discover -s tools/surveyor-data/tests -v
 py -3 tools/run-addon-tests.py tests/surveyor/run.lua
+py -3 tools/run-addon-tests.py tests/surveyor/minimap.lua
 ```
 
 The Lua tests run under a real Lua 5.1 (Lupa) with a mocked client; see the header of `tools/run-addon-tests.py` for the one-time install.

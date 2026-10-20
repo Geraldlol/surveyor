@@ -4,13 +4,27 @@
   "inputs": {
     "sha256": {
       "AreaTable.csv": "0dd594a9b4f6eb80ddcf793f40b4d1d74b332363b76dfd06f73b0515a20830e8",
+      "LiquidType.csv": "ebb29370ef7e939110609819b7beafa93528c0649e4cdcac19fa2aedd3a08bc4",
       "Map.csv": "63e3681e1d37c2860ed4744511201121dd1391b8351ecb97d41ece33dc7b4f24"
     }
   },
   "maps": {
     "0": {
-      "areas": 448,
+      "areas": 446,
       "chunks": 188416,
+      "openSea": {
+        "areasDropped": [
+          {
+            "id": 104,
+            "name": "The Vile Reef"
+          },
+          {
+            "id": 2397,
+            "name": "The Great Sea"
+          }
+        ],
+        "chunksDropped": 79769
+      },
       "otherContinent": {
         "chunks": 0,
         "ids": []
@@ -22,15 +36,28 @@
       },
       "tiles": 736,
       "vertices": {
-        "borders": 17592,
-        "zones": 3228
+        "borders": 17758,
+        "zones": 5064
       },
       "wdtFileDataID": 775971,
       "zones": 28
     },
     "1": {
-      "areas": 415,
+      "areas": 413,
       "chunks": 252928,
+      "openSea": {
+        "areasDropped": [
+          {
+            "id": 2319,
+            "name": "The Great Sea"
+          },
+          {
+            "id": 2320,
+            "name": "The Great Sea"
+          }
+        ],
+        "chunksDropped": 109222
+      },
       "otherContinent": {
         "chunks": 0,
         "ids": []
@@ -42,8 +69,8 @@
       },
       "tiles": 988,
       "vertices": {
-        "borders": 21328,
-        "zones": 3254
+        "borders": 21284,
+        "zones": 6190
       },
       "wdtFileDataID": 782779,
       "zones": 26

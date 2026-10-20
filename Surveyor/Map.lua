@@ -9,10 +9,11 @@ ns.Map = Map
 
 local MAX_LINES = 8000
 local THROTTLE = 0.1
-local MAP_CONTINENT, MAP_ZONE = 2, 3 -- Enum.UIMapType.Continent, Enum.UIMapType.Zone
+local MAP_ZONE = 3 -- Enum.UIMapType.Zone; every other map type draws nothing
+local LINE_TEXTURE = "Interface\\TaxiFrame\\UI-Taxi-Line"
 local UNEXPLORED = { 1, 0.82, 0.2, 0.9 }
 local EXPLORED = { 0.4, 0.75, 0.45, 0.55 }
-local ZONE = { 0.9, 0.9, 0.9, 0.7 }
+local SHADOW = { 0, 0, 0, 0.5 }
 local EVENTS = { "MAP_EXPLORATION_UPDATED", "FOG_OF_WAR_UPDATED", "ZONE_CHANGED_NEW_AREA", "PLAYER_ENTERING_WORLD" }
 
 local frame, canvas
@@ -24,6 +25,7 @@ local capNoticed = false
 local settingsRev, exploredRev = 0, 0
 local keyMap, keyW, keyH, keyScale, keySettings, keyExplored
 local sinceCheck = 0
+local fade = 1 -- opacity / 100 for the paint in progress
 
 local function notify(msg)
 	if ns.Print then
@@ -43,8 +45,7 @@ end
 -- and empty vertex caches. Computed once per uiMapID.
 local function prepare(mapID)
 	local info = C_Map.GetMapInfo(mapID)
-	local mapType = info and info.mapType
-	if mapType ~= MAP_CONTINENT and mapType ~= MAP_ZONE then
+	if not info or info.mapType ~= MAP_ZONE then
 		return false
 	end
 	local c, a = C_Map.GetWorldPosFromMapPos(mapID, CreateVector2D(0, 0))
@@ -52,23 +53,34 @@ local function prepare(mapID)
 	if not (a and b and a.x and a.y and b.x and b.y) or c ~= c2 or (c ~= 0 and c ~= 1) then
 		return false
 	end
-	local isZone = mapType == MAP_ZONE
-	local set = isZone and ns.Borders or ns.Zones
-	local source = set and set[c]
+	local source = ns.Borders and ns.Borders[c]
 	if not source then
 		return false
 	end
 	local minX, maxX = math.min(a.x, b.x), math.max(a.x, b.x)
 	local minY, maxY = math.min(a.y, b.y), math.max(a.y, b.y)
+	-- A zone map keeps only areas whose root zone lies at least 90% inside the map,
+	-- so neighbouring zones' subzones at its edges stay hidden. When no zone does,
+	-- fall back to every area whose box meets the map.
+	local zoneSet
+	if ns.Areas and ns.Zones and ns.Zones[c] then
+		for zid, z in pairs(ns.Zones[c]) do
+			if Grid.OverlapRatio(minX, maxX, minY, maxY, Grid.BoxToWorld(z)) >= 0.9 then
+				zoneSet = zoneSet or {}
+				zoneSet[zid] = true
+			end
+		end
+	end
 	local ids = {}
 	for id, e in pairs(source) do
-		if Grid.RectsMeet(minX, maxX, minY, maxY, Grid.BoxToWorld(e)) then
+		if Grid.RectsMeet(minX, maxX, minY, maxY, Grid.BoxToWorld(e))
+			and (not zoneSet or zoneSet[Grid.RootOf(ns.Areas, id) or false]) then
 			ids[#ids + 1] = id
 		end
 	end
 	table.sort(ids)
 	return {
-		id = mapID, continent = c, zone = isZone, source = source, ids = ids,
+		id = mapID, continent = c, source = source, ids = ids,
 		x00 = a.x, y00 = a.y, x11 = b.x, y11 = b.y,
 		nx = {}, ny = {}, px = {}, py = {},
 	}
@@ -162,14 +174,22 @@ local function addLine(ax, ay, bx, by, color, thickness)
 	local l = lines[drawnLines]
 	if not l then
 		l = frame:CreateLine(nil, "ARTWORK")
-		l:SetColorTexture(1, 1, 1, 1)
+		local ok, set = pcall(l.SetTexture, l, LINE_TEXTURE)
+		if not (ok and set) then
+			l:SetColorTexture(1, 1, 1, 1)
+		end
 		lines[drawnLines] = l
 	end
 	l:SetStartPoint("TOPLEFT", frame, ax, -ay)
 	l:SetEndPoint("TOPLEFT", frame, bx, -by)
 	l:SetThickness(thickness)
+	-- Pool slots change role between paints, and lines on one sublevel have no
+	-- promised order: shadows go under the coloured lines explicitly.
+	if l.SetDrawLayer then
+		l:SetDrawLayer("ARTWORK", color == SHADOW and 0 or 1)
+	end
 	l:SetVertexColor(color[1], color[2], color[3])
-	l:SetAlpha(color[4])
+	l:SetAlpha(color[4] * fade)
 	l:Show()
 	return true
 end
@@ -183,19 +203,23 @@ local function addLabel(text, x, y, color)
 	end
 	fs:SetText(text)
 	fs:SetTextColor(color[1], color[2], color[3])
-	fs:SetAlpha(color[4])
+	fs:SetAlpha(color[4] * fade)
 	fs:ClearAllPoints()
 	fs:SetPoint("CENTER", frame, "TOPLEFT", x, -y)
 	fs:Show()
 end
 
--- Draws every edge of an entry's loops; false once the line cap is hit.
-local function drawLoops(m, loops, color, w, h, thickness)
+-- Draws every edge of an entry's loops, each over a shadow line when
+-- shadowThickness is set; false once the line cap is hit.
+local function drawLoops(m, loops, color, w, h, thickness, shadowThickness)
 	for li = 1, #loops do
 		for _, ax, ay, bx, by in Grid.Edges(loops[li]) do
 			local x1, y1 = vertex(m, ax, ay)
 			local x2, y2 = vertex(m, bx, by)
 			if not Grid.EdgeOutside(x1, y1, x2, y2) then
+				if shadowThickness and not addLine(x1 * w, y1 * h, x2 * w, y2 * h, SHADOW, shadowThickness) then
+					return false
+				end
 				if not addLine(x1 * w, y1 * h, x2 * w, y2 * h, color, thickness) then
 					return false
 				end
@@ -205,18 +229,39 @@ local function drawLoops(m, loops, color, w, h, thickness)
 	return true
 end
 
-local function draw(m, s, w, h, thickness)
+-- True when a shadow under every edge draw() paints keeps the total within MAX_LINES.
+local function shadowFits(m, s)
+	local n = 0
+	for i = 1, #m.ids do
+		local id = m.ids[i]
+		if Grid.Passes(s.mode, ns.Areas and ns.Areas[id]) then
+			local loops = m.source[id][8]
+			for li = 1, #loops do
+				for _, ax, ay, bx, by in Grid.Edges(loops[li]) do
+					local x1, y1 = vertex(m, ax, ay)
+					local x2, y2 = vertex(m, bx, by)
+					if not Grid.EdgeOutside(x1, y1, x2, y2) then
+						n = n + 1
+						if n * 2 > MAX_LINES then
+							return false
+						end
+					end
+				end
+			end
+		end
+	end
+	return true
+end
+
+local function draw(m, s, w, h, thickness, shadowThickness)
 	for i = 1, #m.ids do
 		local id = m.ids[i]
 		local e = m.source[id]
 		local row = ns.Areas and ns.Areas[id]
-		if not m.zone or Grid.Passes(s.mode, row) then
+		if Grid.Passes(s.mode, row) then
 			local px, py = probe(m, id, e)
-			local color = ZONE
-			if m.zone then
-				color = isExplored(m, id, px, py) and EXPLORED or UNEXPLORED
-			end
-			if not drawLoops(m, e[8], color, w, h, thickness) then
+			local color = isExplored(m, id, px, py) and EXPLORED or UNEXPLORED
+			if not drawLoops(m, e[8], color, w, h, thickness, shadowThickness) then
 				return
 			end
 			if s.names and inside(px, py) then
@@ -245,7 +290,9 @@ function Map.Paint()
 		end
 		if m then
 			frame:SetSize(w, h)
-			draw(m, s, w, h, (tonumber(s.thickness) or 2) / scale)
+			local t = tonumber(s.thickness) or 3
+			fade = math.max(0, math.min(100, tonumber(s.opacity) or 100)) / 100
+			draw(m, s, w, h, t / scale, shadowFits(m, s) and (t + 1) / scale or nil)
 		end
 	end
 	for i = drawnLines + 1, linesUsed do
@@ -330,4 +377,96 @@ function Map.Init()
 	end)
 	frame:SetScript("OnUpdate", onUpdate)
 	return true
+end
+
+local function areaName(id)
+	local name = C_Map and C_Map.GetAreaInfo and C_Map.GetAreaInfo(id)
+	if type(name) == "string" and name ~= "" then
+		return name
+	end
+	local row = ns.Areas and ns.Areas[id]
+	return row and row[1] or tostring(id)
+end
+
+-- Diagnostic for /survey probe: what the client and the data report at the
+-- player's position. Returns the lines to print; a missing API adds a line naming it.
+function Map.Probe()
+	local out = {}
+	local function add(fmt, ...)
+		out[#out + 1] = string.format(fmt, ...)
+	end
+	if not (C_Map and C_Map.GetBestMapForUnit) then
+		add("C_Map.GetBestMapForUnit missing")
+		return out
+	end
+	local mapID = C_Map.GetBestMapForUnit("player")
+	if not mapID then
+		add("no map for the player")
+		return out
+	end
+	local info = C_Map.GetMapInfo and C_Map.GetMapInfo(mapID)
+	add("map %s type %s", tostring(mapID), tostring(info and info.mapType))
+	local pos = C_Map.GetPlayerMapPosition and C_Map.GetPlayerMapPosition(mapID, "player")
+	if not (pos and pos.x and pos.y) then
+		add("player position unavailable (C_Map.GetPlayerMapPosition)")
+		return out
+	end
+	add("player %.4f, %.4f", pos.x, pos.y)
+	local c, world
+	if C_Map.GetWorldPosFromMapPos then
+		c, world = C_Map.GetWorldPosFromMapPos(mapID, pos)
+	end
+	local borders = ns.Borders and c and ns.Borders[c]
+	if not (world and world.x and world.y) then
+		add("world position unavailable (C_Map.GetWorldPosFromMapPos)")
+	else
+		local gx, gy = Grid.FromWorld(world.x, world.y)
+		add("world continent %s: x %.1f, y %.1f (grid %.2f, %.2f)", tostring(c), world.x, world.y, gx, gy)
+		local hits = {}
+		for id, e in pairs(borders or {}) do
+			if Grid.Contains(e, gx, gy) then
+				hits[#hits + 1] = id
+			end
+		end
+		table.sort(hits)
+		if #hits == 0 then
+			add("data area: none")
+		end
+		for i = 1, #hits do
+			local id = hits[i]
+			local row = ns.Areas and ns.Areas[id]
+			local root = ns.Areas and Grid.RootOf(ns.Areas, id)
+			add("data area %d %s: level %s, root %s %s", id, areaName(id), tostring(row and row[3]),
+				tostring(root), root and areaName(root) or "?")
+		end
+	end
+	add("subzone \"%s\", zone \"%s\"", tostring(GetSubZoneText and GetSubZoneText()),
+		tostring(GetZoneText and GetZoneText()))
+	local api = C_MapExplorationInfo and C_MapExplorationInfo.GetExploredAreaIDsAtPosition
+	if not api then
+		add("C_MapExplorationInfo.GetExploredAreaIDsAtPosition missing")
+		return out
+	end
+	local found = api(mapID, pos)
+	if type(found) ~= "table" then
+		add("explored ids at player: %s", tostring(found))
+		return out
+	end
+	add("explored ids at player: %d", #found)
+	local m = maps[mapID]
+	if m == nil and C_Map.GetMapInfo and C_Map.GetWorldPosFromMapPos and CreateVector2D then
+		m = prepare(mapID)
+		maps[mapID] = m
+	end
+	for i = 1, #found do
+		local id = found[i]
+		local e = m and m.source[id]
+		local verdict = "n/a"
+		if e then
+			verdict = isExplored(m, id, probe(m, id, e)) and "explored" or "unexplored"
+		end
+		add("  %s (%s): in Borders %s, layer verdict %s", tostring(id), areaName(id),
+			(borders and borders[id]) and "yes" or "no", verdict)
+	end
+	return out
 end

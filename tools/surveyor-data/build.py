@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build Surveyor's exploration-border tables from the Forever client's terrain.
 
-Offline and read only: reads Map.csv, AreaTable.csv, the WDTs of maps 0 and 1
+Offline and read only: reads Map.csv, AreaTable.csv, LiquidType.csv, the WDTs of maps 0 and 1
 and every root ADT from a Polestar CASC cache, and writes Surveyor/Data/*.lua
 plus MANIFEST.json. `--check` regenerates in memory and compares byte for byte
 without writing anything. Standard library only. See README.md.
@@ -77,9 +77,58 @@ def parse_mcnk_header(data: bytes) -> tuple[int, int, int, float, float]:
     return index_x, index_y, area_id, wx, wy
 
 
-def parse_adt(adt: bytes, col: int, row: int) -> list[tuple[int, int, int]]:
-    """Return (gx, gy, areaId) for the 256 chunks of a root ADT at tile (col, row)."""
-    mcnks = [data for tag, data in read_chunks(adt) if tag == "MCNK"]
+def parse_mh2o(data: bytes) -> list[list[tuple[int, float, int, int, int, int]]]:
+    """Per MCNK slot (indexY * 16 + indexX): (liquidType, minHeight, xOffset, yOffset, width, height)."""
+    if len(data) < 256 * 12:
+        raise BuildError(f"MH2O is {len(data)} bytes, shorter than its 256 headers")
+    slots = []
+    for i in range(256):
+        offset, count, _attributes = struct.unpack_from("<III", data, i * 12)
+        layers = []
+        for k in range(count):
+            o = offset + k * 24
+            if o + 24 > len(data):
+                raise BuildError(f"MH2O instance {k} of chunk {i} runs past the end")
+            liquid, _lvf, min_height, _max_height, x, y, w, h = struct.unpack_from("<HHffBBBB", data, o)
+            layers.append((liquid, min_height, x, y, w, h))
+        slots.append(layers)
+    return slots
+
+
+def terrain_max(data: bytes) -> float:
+    """Highest terrain vertex of an MCNK: zBase (0x70) plus the largest of the 145 MCVT heights."""
+    (z_base,) = struct.unpack_from("<f", data, 0x70)
+    o = 128
+    while o + 8 <= len(data):
+        tag = data[o : o + 4][::-1]
+        (size,) = struct.unpack_from("<I", data, o + 4)
+        if tag == b"MCVT":
+            if size < 145 * 4 or o + 8 + size > len(data):
+                raise BuildError(f"MCVT is {size} bytes, expected 580")
+            return z_base + max(struct.unpack_from("<145f", data, o + 8))
+        o += 8 + size
+    raise BuildError("MCNK has no MCVT subchunk")
+
+
+def is_open_sea(layers, ocean: frozenset, data: bytes) -> bool:
+    """An ocean layer covering the whole chunk whose surface is above all of the chunk's terrain."""
+    full = [m for liquid, m, x, y, w, h in layers if liquid in ocean and (x, y, w, h) == (0, 0, 8, 8)]
+    return bool(full) and max(full) > terrain_max(data)
+
+
+def read_ocean_types(text: str) -> frozenset:
+    """LiquidType ids that are ocean: SoundBank 1 or Flags bit 0x400."""
+    return frozenset(
+        int(row["ID"]) for row in _rows(text) if int(row["SoundBank"]) == 1 or int(row["Flags"]) & 0x400
+    )
+
+
+def parse_adt(adt: bytes, col: int, row: int, ocean: frozenset = frozenset()) -> list[tuple[int, int, int, bool]]:
+    """Return (gx, gy, areaId, openSea) for the 256 chunks of a root ADT at tile (col, row)."""
+    top = read_chunks(adt)
+    mcnks = [data for tag, data in top if tag == "MCNK"]
+    mh2o = next((data for tag, data in top if tag == "MH2O"), None)
+    liquids = parse_mh2o(mh2o) if mh2o is not None else None
     if len(mcnks) != 256:
         raise BuildError(f"tile {col}_{row}: {len(mcnks)} MCNK chunks, expected 256")
     seen = set()
@@ -96,7 +145,8 @@ def parse_adt(adt: bytes, col: int, row: int) -> list[tuple[int, int, int]]:
                 raise BuildError(
                     f"tile {col}_{row}: first MCNK at ({wx:.3f}, {wy:.3f}), grid says ({ex:.3f}, {ey:.3f})"
                 )
-        out.append((gx, gy, area))
+        sea = liquids is not None and is_open_sea(liquids[iy * 16 + ix], ocean, data)
+        out.append((gx, gy, area, sea))
     return out
 
 
@@ -327,18 +377,22 @@ class MapData:
     missing_ids: list
     other_continent: int
     other_continent_ids: list
+    sea_chunks: int  # tagged chunks dropped as open sea
+    sea_areas: list  # areas whose every chunk is open sea (absent from borders/zones)
+    owners: set  # every area owning a tagged chunk, sea or not
     borders: dict  # areaId -> Outline
     zones: dict  # root zone id -> Outline
 
 
 def build_map(map_id: int, wdt: int, tiles: list, areas: dict[int, Area]) -> MapData:
-    """tiles: list of (col, row, [(gx, gy, areaId), ...])."""
+    """tiles: list of (col, row, [(gx, gy, areaId, openSea), ...]). Open-sea chunks are not traced."""
     by_area: dict[int, set] = {}
-    zero = missing = other = 0
+    owners = set()
+    zero = missing = other = sea = 0
     missing_ids, other_ids = set(), set()
     chunk_count = 0
     for _col, _row, chunks in tiles:
-        for gx, gy, aid in chunks:
+        for gx, gy, aid, open_sea in chunks:
             chunk_count += 1
             if aid == 0:
                 zero += 1
@@ -350,6 +404,10 @@ def build_map(map_id: int, wdt: int, tiles: list, areas: dict[int, Area]) -> Map
             if areas[aid].continent != map_id:
                 other += 1
                 other_ids.add(aid)
+            owners.add(aid)
+            if open_sea:
+                sea += 1
+                continue
             by_area.setdefault(aid, set()).add((gx, gy))
     by_zone: dict[int, set] = {}
     for aid, cells in by_area.items():
@@ -364,6 +422,9 @@ def build_map(map_id: int, wdt: int, tiles: list, areas: dict[int, Area]) -> Map
         missing_ids=sorted(missing_ids),
         other_continent=other,
         other_continent_ids=sorted(other_ids),
+        sea_chunks=sea,
+        sea_areas=sorted(owners - set(by_area)),
+        owners=owners,
         borders={aid: outline(c) for aid, c in sorted(by_area.items())},
         zones={zid: outline(c) for zid, c in sorted(by_zone.items())},
     )
@@ -434,7 +495,9 @@ def emit_borders(build: str, m: MapData) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
-def emit_manifest(build: str, product: str, maps: list[MapData], areas_kept: int, hashes: dict) -> bytes:
+def emit_manifest(
+    build: str, product: str, maps: list[MapData], areas: dict[int, Area], areas_kept: int, hashes: dict
+) -> bytes:
     doc = {
         "build": build,
         "product": product,
@@ -451,6 +514,10 @@ def emit_manifest(build: str, product: str, maps: list[MapData], areas_kept: int
                     "notInAreaTableIds": m.missing_ids,
                 },
                 "otherContinent": {"chunks": m.other_continent, "ids": m.other_continent_ids},
+                "openSea": {
+                    "chunksDropped": m.sea_chunks,
+                    "areasDropped": [{"id": a, "name": areas[a].name} for a in m.sea_areas],
+                },
                 "areas": len(m.borders),
                 "zones": len(m.zones),
                 "vertices": {
@@ -464,28 +531,32 @@ def emit_manifest(build: str, product: str, maps: list[MapData], areas_kept: int
     return (json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
 
 
-def generate(build: str, product: str, map_csv: bytes, area_csv: bytes, read_file) -> dict[str, bytes]:
+def generate(
+    build: str, product: str, map_csv: bytes, area_csv: bytes, liquid_csv: bytes, read_file
+) -> dict[str, bytes]:
     """read_file(fdid) -> bytes. Returns output file name -> bytes."""
     wdts = read_map_wdts(map_csv.decode("utf-8-sig"))
     areas = read_areas(area_csv.decode("utf-8-sig"))
+    ocean = read_ocean_types(liquid_csv.decode("utf-8-sig"))
     maps = []
     for map_id in MAPS:
         tiles = []
         for col, row, root in parse_maid(read_file(wdts[map_id])):
-            tiles.append((col, row, parse_adt(read_file(root), col, row)))
+            tiles.append((col, row, parse_adt(read_file(root), col, row, ocean)))
         maps.append(build_map(map_id, wdts[map_id], tiles, areas))
     owners = set()
     for m in maps:
-        owners.update(m.borders)
+        owners.update(m.owners)
     keep = with_ancestors(areas, owners)
     hashes = {
         "AreaTable.csv": hashlib.sha256(area_csv).hexdigest(),
+        "LiquidType.csv": hashlib.sha256(liquid_csv).hexdigest(),
         "Map.csv": hashlib.sha256(map_csv).hexdigest(),
     }
     out = {"Areas.lua": emit_areas(build, areas, keep)}
     for m in maps:
         out[f"Borders{m.map_id}.lua"] = emit_borders(build, m)
-    out["MANIFEST.json"] = emit_manifest(build, product, maps, len(keep), hashes)
+    out["MANIFEST.json"] = emit_manifest(build, product, maps, areas, len(keep), hashes)
     return out
 
 
@@ -517,6 +588,7 @@ def main(argv=None) -> int:
             args.product,
             (wago / "Map.csv").read_bytes(),
             (wago / "AreaTable.csv").read_bytes(),
+            (wago / "LiquidType.csv").read_bytes(),
             read_file,
         )
     except (BuildError, OSError, KeyError, ValueError) as error:

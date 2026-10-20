@@ -13,4 +13,6 @@ Data/Borders0.lua
 Data/Borders1.lua
 Grid.lua
 Core.lua
+Options.lua
 Map.lua
+Minimap.lua

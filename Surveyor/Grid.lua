@@ -65,3 +65,58 @@ function Grid.Passes(mode, row)
 	end
 	return mode == "all" or (row[3] or 0) > 0
 end
+
+-- World yards back to chunk-corner units (fractional): the inverse of ToWorld.
+function Grid.FromWorld(wx, wy)
+	return (ORIGIN - wy) / CHUNK, (ORIGIN - wx) / CHUNK
+end
+
+-- Fraction of rect b's area inside rect a, both as minX, maxX, minY, maxY.
+-- The ratio is the same in chunk-corner units and in world yards.
+function Grid.OverlapRatio(aMinX, aMaxX, aMinY, aMaxY, bMinX, bMaxX, bMinY, bMaxY)
+	local area = (bMaxX - bMinX) * (bMaxY - bMinY)
+	if area <= 0 then
+		return 0
+	end
+	local w = math.min(aMaxX, bMaxX) - math.max(aMinX, bMinX)
+	local h = math.min(aMaxY, bMaxY) - math.max(aMinY, bMinY)
+	if w <= 0 or h <= 0 then
+		return 0
+	end
+	return w * h / area
+end
+
+-- Top-level zone of an area: follows ParentAreaID (row[2]) to 0, at most 8 hops.
+-- Nil for an unknown id or a longer chain (a cycle).
+function Grid.RootOf(areas, id)
+	for _ = 0, 8 do
+		local row = areas[id]
+		if not row then
+			return nil
+		end
+		local parent = row[2]
+		if not parent or parent == 0 then
+			return id
+		end
+		id = parent
+	end
+	return nil
+end
+
+-- True when the point (gx, gy), fractional chunk-corner units, lies in the entry:
+-- bounding box prefilter, then an even-odd crossing test over all its loops.
+function Grid.Contains(e, gx, gy)
+	if gx < e[1] or gx >= e[3] or gy < e[2] or gy >= e[4] then
+		return false
+	end
+	local inside = false
+	local loops = e[8]
+	for li = 1, #loops do
+		for _, ax, ay, bx, by in Grid.Edges(loops[li]) do
+			if (ay > gy) ~= (by > gy) and gx < ax + (gy - ay) * (bx - ax) / (by - ay) then
+				inside = not inside
+			end
+		end
+	end
+	return inside
+end
